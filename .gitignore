@@ -4,3 +4,5 @@
 /.gclient_previous_sync_commits
 /src
 /vanadium.keystore
+/.depot_tools
+.direnv
