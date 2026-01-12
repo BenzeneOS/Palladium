@@ -1,0 +1,347 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Amaan Qureshi <git@amaanq.com>
+Date: Sat, 11 Jan 2026 00:00:00 +0000
+Subject: [PATCH] add privacy features: AMP removal and cookie consent
+
+Adds two privacy enhancement features:
+1. AMP removal - Redirects AMP pages to their canonical URLs
+2. Cookie consent auto-accept - Automatically accepts cookie consent dialogs
+
+Features are enabled by default but can be toggled in Privacy settings.
+
+4. Enable JavaScript injection - Calls AllowInjectingJavaScript() to enable
+   evaluateJavaScript() API for browser customizations (same as WebView).
+---
+
+diff --git a/base/android/java/src/org/chromium/base/shared_preferences/SharedPrefsUtils.java b/base/android/java/src/org/chromium/base/shared_preferences/SharedPrefsUtils.java
+--- a/base/android/java/src/org/chromium/base/shared_preferences/SharedPrefsUtils.java
++++ b/base/android/java/src/org/chromium/base/shared_preferences/SharedPrefsUtils.java
+@@ -28,7 +28,9 @@
+     private static List<String> getKeysInUseList() {
+         return Arrays.asList(
+             SharedPrefsExt.CLOSE_TABS_ON_EXIT.getKey(),
+-            SharedPrefsExt.OPEN_LINKS_IN_INCOGNITO.getKey()
++            SharedPrefsExt.OPEN_LINKS_IN_INCOGNITO.getKey(),
++            SharedPrefsExt.AVOID_AMP_WEBSITES.getKey(),
++            SharedPrefsExt.ACCEPT_COOKIE_CONSENT.getKey()
+         );
+     }
+ 
+@@ -146,6 +148,10 @@
+                 new BoolSharedPref("close_tabs_on_exit", false);
+         public static final BoolSharedPref OPEN_LINKS_IN_INCOGNITO =
+                 new BoolSharedPref("open_links_in_incognito", false);
++        public static final BoolSharedPref AVOID_AMP_WEBSITES =
++                new BoolSharedPref("avoid_amp_websites", true);
++        public static final BoolSharedPref ACCEPT_COOKIE_CONSENT =
++                new BoolSharedPref("accept_cookie_consent", true);
+     }
+ 
+     static SharedPreferencesManager getSharedPrefManager() {
+
+diff --git a/chrome/android/chrome_java_sources.gni b/chrome/android/chrome_java_sources.gni
+--- a/chrome/android/chrome_java_sources.gni
++++ b/chrome/android/chrome_java_sources.gni
+@@ -44,6 +44,7 @@
+   "java/src/org/chromium/chrome/browser/TabbedMismatchedIndicesHandler.java",
+   "java/src/org/chromium/chrome/browser/TabbedModeTabDelegateFactory.java",
+   "java/src/org/chromium/chrome/browser/UndoRefocusHelper.java",
++  "java/src/org/chromium/chrome/browser/VanadiumCustomizations.java",
+   "java/src/org/chromium/chrome/browser/WarmupManager.java",
+   "java/src/org/chromium/chrome/browser/ZoomController.java",
+   "java/src/org/chromium/chrome/browser/about_settings/AboutChromePreferenceOSVersion.java",
+
+diff --git a/chrome/android/java/res/xml/privacy_preferences_ext.xml b/chrome/android/java/res/xml/privacy_preferences_ext.xml
+--- a/chrome/android/java/res/xml/privacy_preferences_ext.xml
++++ b/chrome/android/java/res/xml/privacy_preferences_ext.xml
+@@ -20,6 +20,16 @@
+         android:title="@string/open_links_in_incognito_title"
+         android:summary="@string/open_links_in_incognito_summary"
+         android:persistent="false"/>
++    <org.chromium.components.browser_ui.settings.ChromeSwitchPreference
++        android:key="avoid_amp_websites"
++        android:title="@string/avoid_amp_websites_title"
++        android:summary="@string/avoid_amp_websites_summary"
++        android:persistent="false"/>
++    <org.chromium.components.browser_ui.settings.ChromeSwitchPreference
++        android:key="accept_cookie_consent"
++        android:title="@string/accept_cookie_consent_title"
++        android:summary="@string/accept_cookie_consent_summary"
++        android:persistent="false"/>
+     <org.chromium.components.browser_ui.settings.ChromeBasePreference
+         android:key="webrtc_policy"
+         android:title="@string/webrtc_policy_title"
+
+diff --git a/chrome/android/java/src/org/chromium/chrome/browser/app/ChromeActivity.java b/chrome/android/java/src/org/chromium/chrome/browser/app/ChromeActivity.java
+--- a/chrome/android/java/src/org/chromium/chrome/browser/app/ChromeActivity.java
++++ b/chrome/android/java/src/org/chromium/chrome/browser/app/ChromeActivity.java
+@@ -196,6 +196,7 @@
+ import org.chromium.chrome.browser.toolbar.ControlContainer;
+ import org.chromium.chrome.browser.toolbar.ToolbarManager;
+ import org.chromium.chrome.browser.translate.TranslateBridge;
++import org.chromium.chrome.browser.VanadiumCustomizations;
+ import org.chromium.chrome.browser.ui.BottomContainer;
+ import org.chromium.chrome.browser.ui.RootUiCoordinator;
+ import org.chromium.chrome.browser.ui.appmenu.AppMenuBlocker;
+@@ -907,6 +908,8 @@
+                     public void onPageLoadFinished(Tab tab, GURL url) {
+                         postDeferredStartupIfNeeded();
+                         OfflinePageUtils.showOfflineSnackbarIfNecessary(tab);
++                        // Vanadium: Apply customizations (AMP removal, cookie consent)
++                        VanadiumCustomizations.onUrlUpdated(tab);
+                     }
+ 
+                     @Override
+
+diff --git a/chrome/android/java/src/org/chromium/chrome/browser/privacy/settings/PrivacySettingsExt.java b/chrome/android/java/src/org/chromium/chrome/browser/privacy/settings/PrivacySettingsExt.java
+--- a/chrome/android/java/src/org/chromium/chrome/browser/privacy/settings/PrivacySettingsExt.java
++++ b/chrome/android/java/src/org/chromium/chrome/browser/privacy/settings/PrivacySettingsExt.java
+@@ -31,6 +31,9 @@
+     private static final String PREF_CLOSE_TABS_ON_EXIT = SharedPrefsExt.CLOSE_TABS_ON_EXIT.getKey();
+     private static final String PREF_OPEN_LINKS_IN_INCOGNITO =
+             SharedPrefsExt.OPEN_LINKS_IN_INCOGNITO.getKey();
++    private static final String PREF_AVOID_AMP_WEBSITES = SharedPrefsExt.AVOID_AMP_WEBSITES.getKey();
++    private static final String PREF_ACCEPT_COOKIE_CONSENT =
++            SharedPrefsExt.ACCEPT_COOKIE_CONSENT.getKey();
+     private static final String PREF_WEBRTC_POLICY = "webrtc_policy";
+     private static final String PREF_CROSS_ORIGIN_REFERRER_POLICY = "cross_origin_referrer_policy";
+ 
+@@ -47,6 +50,10 @@
+                 SharedPrefsExt.CLOSE_TABS_ON_EXIT.put((boolean) val);
+             } else if (PREF_OPEN_LINKS_IN_INCOGNITO.equals(key)) {
+                 SharedPrefsExt.OPEN_LINKS_IN_INCOGNITO.put((boolean) val);
++            } else if (PREF_AVOID_AMP_WEBSITES.equals(key)) {
++                SharedPrefsExt.AVOID_AMP_WEBSITES.put((boolean) val);
++            } else if (PREF_ACCEPT_COOKIE_CONSENT.equals(key)) {
++                SharedPrefsExt.ACCEPT_COOKIE_CONSENT.put((boolean) val);
+             }
+             return true;
+         };
+@@ -114,6 +121,20 @@
+             openLinksInIncognitoPref.setOnPreferenceChangeListener(getListener(profile));
+         }
+ 
++        ChromeSwitchPreference avoidAmpWebsitesPref =
++                (ChromeSwitchPreference) prefFragment.findPreference(PREF_AVOID_AMP_WEBSITES);
++        if (avoidAmpWebsitesPref != null) {
++            avoidAmpWebsitesPref.setOrder(PRIVACY_PREFERENCES_ORDER);
++            avoidAmpWebsitesPref.setOnPreferenceChangeListener(getListener(profile));
++        }
++
++        ChromeSwitchPreference acceptCookieConsentPref =
++                (ChromeSwitchPreference) prefFragment.findPreference(PREF_ACCEPT_COOKIE_CONSENT);
++        if (acceptCookieConsentPref != null) {
++            acceptCookieConsentPref.setOrder(PRIVACY_PREFERENCES_ORDER);
++            acceptCookieConsentPref.setOnPreferenceChangeListener(getListener(profile));
++        }
++
+         Preference webRtcPolicyPref = prefFragment.findPreference(PREF_WEBRTC_POLICY);
+         if (webRtcPolicyPref != null) {
+             webRtcPolicyPref.setOrder(PRIVACY_PREFERENCES_ORDER);
+@@ -147,6 +168,18 @@
+                 /* newSummary*/ null,
+                 /* newCheckedValue*/ SharedPrefsExt.OPEN_LINKS_IN_INCOGNITO.get());
+ 
++        ChromeSwitchPreference avoidAmpWebsitesPref =
++                (ChromeSwitchPreference) prefFragment.findPreference(PREF_AVOID_AMP_WEBSITES);
++        SettingsExtUtils.safelyUpdateSwitchPreference(/* switchPref */ avoidAmpWebsitesPref,
++                /* newSummary*/ null,
++                /* newCheckedValue*/ SharedPrefsExt.AVOID_AMP_WEBSITES.get());
++
++        ChromeSwitchPreference acceptCookieConsentPref =
++                (ChromeSwitchPreference) prefFragment.findPreference(PREF_ACCEPT_COOKIE_CONSENT);
++        SettingsExtUtils.safelyUpdateSwitchPreference(/* switchPref */ acceptCookieConsentPref,
++                /* newSummary*/ null,
++                /* newCheckedValue*/ SharedPrefsExt.ACCEPT_COOKIE_CONSENT.get());
++
+         Preference webRtcPolicyPref = prefFragment.findPreference(PREF_WEBRTC_POLICY);
+         SettingsExtUtils.safelyUpdatePreference(/* preference */ webRtcPolicyPref,
+                 /* newSummary */ WebRtcPolicySettings.getWebRtcPolicySummaryString(prefFragment.getContext()));
+
+diff --git a/chrome/browser/chrome_browser_main_android.cc b/chrome/browser/chrome_browser_main_android.cc
+--- a/chrome/browser/chrome_browser_main_android.cc
++++ b/chrome/browser/chrome_browser_main_android.cc
+@@ -24,6 +24,7 @@
+ #include "components/metrics/stability_metrics_helper.h"
+ #include "content/public/browser/android/compositor.h"
+ #include "content/public/browser/browser_thread.h"
++#include "content/public/browser/render_frame_host.h"
+ #include "content/public/common/main_function_params.h"
+ #include "device/fido/features.h"
+ #include "net/base/network_change_notifier.h"
+@@ -101,6 +102,10 @@
+ void ChromeBrowserMainPartsAndroid::PostBrowserStart() {
+   ChromeBrowserMainParts::PostBrowserStart();
+ 
++  // Vanadium: Enable JavaScript injection for browser customizations
++  // (AMP removal, cookie consent auto-accept, etc.)
++  content::RenderFrameHost::AllowInjectingJavaScript();
++
+   base::ThreadPool::PostDelayedTask(
+       FROM_HERE, {base::MayBlock(), base::TaskPriority::BEST_EFFORT},
+       base::BindOnce(&ReportSeccompSupport), base::Minutes(1));
+
+diff --git a/chrome/browser/ui/android/strings/android_chrome_ext_strings.grdp b/chrome/browser/ui/android/strings/android_chrome_ext_strings.grdp
+--- a/chrome/browser/ui/android/strings/android_chrome_ext_strings.grdp
++++ b/chrome/browser/ui/android/strings/android_chrome_ext_strings.grdp
+@@ -28,6 +28,18 @@
+   <message name="IDS_OPEN_LINKS_IN_INCOGNITO_SUMMARY" desc="Summary of opening external links in incognito tabs menu item">
+     Open links navigated by external apps in incognito tabs
+   </message>
++  <message name="IDS_AVOID_AMP_WEBSITES_TITLE" desc="Title of AMP removal menu item">
++    Remove AMP
++  </message>
++  <message name="IDS_AVOID_AMP_WEBSITES_SUMMARY" desc="Summary of AMP removal menu item">
++    Prefer direct websites instead of AMP version
++  </message>
++  <message name="IDS_ACCEPT_COOKIE_CONSENT_TITLE" desc="Title of cookie consent auto-accept menu item">
++    Accept cookies automatically
++  </message>
++  <message name="IDS_ACCEPT_COOKIE_CONSENT_SUMMARY" desc="Summary of cookie consent auto-accept menu item">
++    Automatically accept cookie consent banners
++  </message>
+   <message name="IDS_VANADIUM_CONFIG_VERSION_TITLE" desc="Title of VanadiumConfig version menu item">
+     Vanadium Config version
+   </message>
+
+diff --git a/chrome/android/java/src/org/chromium/chrome/browser/VanadiumCustomizations.java b/chrome/android/java/src/org/chromium/chrome/browser/VanadiumCustomizations.java
+new file mode 100644
+--- /dev/null
++++ b/chrome/android/java/src/org/chromium/chrome/browser/VanadiumCustomizations.java
+@@ -0,0 +1,136 @@
++// Copyright 2026 The Chromium Authors
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++package org.chromium.chrome.browser;
++
++import org.chromium.base.shared_preferences.SharedPrefsUtils;
++import org.chromium.chrome.browser.tab.Tab;
++import org.chromium.content_public.browser.WebContents;
++
++import java.net.MalformedURLException;
++import java.net.URL;
++
++/**
++ * Vanadium-specific customizations applied to web pages.
++ * Includes AMP removal and cookie consent auto-accept functionality.
++ */
++public class VanadiumCustomizations {
++
++    private static final String AMP_SCRIPT = ""
++        + "(function() {"
++        + "function _cleanupAmp() {"
++        + "  document.querySelectorAll('a[data-amp-cur]').forEach(function(a) {"
++        + "    a.href = a.getAttribute('data-amp-cur');"
++        + "    if (!a.href || a.href.includes('/search')) { a.href = a.getAttribute('data-amp'); }"
++        + "    if (a.href.indexOf('?') == -1) { a.href = a.href + '?'; }"
++        + "    a.removeAttribute('data-amp');"
++        + "    a.removeAttribute('data-amp-cur');"
++        + "    a.removeAttribute('ping');"
++        + "  });"
++        + "  document.querySelectorAll('span[aria-label=\"AMP logo\"]').forEach(function(a) {"
++        + "    a.style.display='none';"
++        + "  });"
++        + "  if (document.getElementsByClassName('amp-cantxt').length >= 1 && document.location.href.match(/\\/amp[\\/|\\.]/)) {"
++        + "    document.location.replace(document.getElementsByClassName('amp-cantxt')[0].innerText);"
++        + "  }"
++        + "  if (document.location.href.match(/\\/amp[\\/|\\.]/) && document.querySelector('head > link[rel=\"canonical\"]') != null && document.querySelector('head > link[rel=\"canonical\"]').href != document.location.href) {"
++        + "    document.location.replace(document.querySelector('head > link[rel=\"canonical\"]').href);"
++        + "  }"
++        + "}"
++        + "document.addEventListener('DOMNodeInserted', _cleanupAmp);"
++        + "_cleanupAmp();"
++        + "})();";
++
++    private static final String COOKIE_CONSENT_SCRIPT = ""
++        + "(function(){"
++        + "function clickItem(elem){elem.click();}"
++        + "function acceptViaAPIs(){"
++        + "typeof window.__cmpui=='function'&&window.__cmpui('setAndSaveAllConsent',!0);"
++        + "typeof window.Didomi=='object'&&window.Didomi.setUserAgreeToAll()"
++        + "}"
++        + "window.globalObserver=null;"
++        + "function setupObserver(){"
++        + "if(!window.globalObserver){"
++        + "var newelem=document.createElement('style');"
++        + "newelem.innerHTML='.qc-cmp-showing{visibility:hidden!important}"
++        + "body.didomi-popup-open{overflow:auto!important}"
++        + "#didomi-host{visibility:hidden!important}';"
++        + "document.body.appendChild(newelem);"
++        + "var MutationObserver=window.MutationObserver||window.WebKitMutationObserver;"
++        + "window.globalObserver=new MutationObserver(check);"
++        + "window.globalObserver.observe(window.document.documentElement,{childList:true,subtree:true});"
++        + "window.setTimeout(function(){window.globalObserver.disconnect();window.globalObserver=null},15000)"
++        + "}"
++        + "check()"
++        + "}"
++        + "function check(){"
++        + "window.setTimeout(function(){"
++        + "var listeners=[];"
++        + "listeners.push({selector:'#qcCmpUi',fn:acceptViaAPIs});"
++        + "listeners.push({selector:'#didomi-popup',fn:acceptViaAPIs});"
++        + "listeners.push({selector:'.accept-cookies-button,#purch-gdpr-banner__accept-button,"
++        + "#bbccookies-continue-button,.user-action--accept,.consent-accept,.bcpConsentOKButton,"
++        + ".button.accept,#footer_tc_privacy_button,button[aria-label=\"Button to collapse the message\"],"
++        + ".gdpr-form>.btn[value=\"Continue\"],button[on^=\"tap:\"][on$=\".accept\"],"
++        + "button[on^=\"tap:\"][on$=\".dismiss\"],.js-cookies-button,.app-offer__close_js,"
++        + ".lg-cc__button_type_action',fn:clickItem});"
++        + "for(var i=0,len=listeners.length,listener,elements;i<len;i++){"
++        + "listener=listeners[i];"
++        + "elements=window.document.querySelectorAll(listener.selector);"
++        + "for(var j=0,jLen=elements.length,element;j<jLen;j++){"
++        + "element=elements[j];"
++        + "if(!element.ready){element.ready=true;listener.fn.call(element,element)}"
++        + "}"
++        + "}"
++        + "},5)"
++        + "}"
++        + "window.addEventListener('DOMContentLoaded',setupObserver);"
++        + "check()"
++        + "})();";
++
++    /**
++     * Called when a tab's URL is updated. Applies Vanadium customizations.
++     * @param tab The tab whose URL was updated.
++     */
++    public static void onUrlUpdated(Tab tab) {
++        if (tab == null || tab.getWebContents() == null || tab.getUrl() == null) {
++            return;
++        }
++
++        WebContents webContents = tab.getWebContents();
++        if (webContents.isDestroyed() || webContents.getMainFrame() == null) {
++            return;
++        }
++
++        String url = tab.getUrl().getSpec();
++        if (url == null || url.isEmpty()) {
++            return;
++        }
++
++        // AMP removal for Google search pages
++        boolean avoidAmp = SharedPrefsUtils.SharedPrefsExt.AVOID_AMP_WEBSITES.get();
++        if (avoidAmp && isGoogleSearchUrl(url)) {
++            webContents.evaluateJavaScript(AMP_SCRIPT, null);
++        }
++
++        // Cookie consent auto-accept for all HTTP(S) pages
++        boolean acceptCookies = SharedPrefsUtils.SharedPrefsExt.ACCEPT_COOKIE_CONSENT.get();
++        if (acceptCookies && (url.startsWith("http://") || url.startsWith("https://"))) {
++            webContents.evaluateJavaScript(COOKIE_CONSENT_SCRIPT, null);
++        }
++    }
++
++    private static boolean isGoogleSearchUrl(String spec) {
++        if (spec == null || spec.isEmpty()) {
++            return false;
++        }
++        try {
++            URL url = new URL(spec);
++            String host = url.getHost();
++            return host != null && host.contains(".google.");
++        } catch (MalformedURLException e) {
++            return false;
++        }
++    }
++}

@@ -1,0 +1,9 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Amaan Qureshi <git@amaanq.com>
+Date: Sat, 11 Jan 2026 00:00:00 +0000
+Subject: [PATCH] add fingerprinting mitigations
+
+NOTE: Fingerprinting mitigations not yet implemented in src/.
+This is a placeholder patch.
+---
+

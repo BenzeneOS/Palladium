@@ -1,0 +1,198 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Amaan Qureshi <git@amaanq.com>
+Date: Sat, 11 Jan 2026 00:00:00 +0000
+Subject: [PATCH] fix extension runtime crashes on Android
+
+Fix various runtime crashes when using extensions on Android:
+
+1. SharedPrefsUtils.java - Create proper PreferenceKeyRegistry instead
+   of passing null to getInstanceForRegistry(), which crashes in debug builds
+
+2. AllPreferenceKeyRegistries.java - Register SharedPrefsUtils.REGISTRY
+   in the known registries set
+
+3. favicon_util.cc - Add Android guards for missing favicon resources
+   (IDR_DEFAULT_FAVICON_* not available on Android)
+
+4. current_channel_logo.cc - Return default logo for non-Google-branded
+   builds instead of hitting NOTREACHED()
+---
+ .../base/shared_preferences/SharedPrefsUtils.java  | 31 ++++++++++++++-----
+ .../preferences/AllPreferenceKeyRegistries.java    |  4 ++-
+ chrome/browser/extensions/favicon/favicon_util.cc | 12 +++++++-
+ chrome/browser/ui/webui/current_channel_logo.cc   |  2 +-
+ 4 files changed, 39 insertions(+), 10 deletions(-)
+
+diff --git a/base/android/java/src/org/chromium/base/shared_preferences/SharedPrefsUtils.java b/base/android/java/src/org/chromium/base/shared_preferences/SharedPrefsUtils.java
+index 0bacc94f580dc..ef3c73db1b341 100644
+--- a/base/android/java/src/org/chromium/base/shared_preferences/SharedPrefsUtils.java
++++ b/base/android/java/src/org/chromium/base/shared_preferences/SharedPrefsUtils.java
+@@ -1,17 +1,39 @@
+ package org.chromium.base.shared_preferences;
+
++import org.chromium.build.BuildConfig;
+ import org.chromium.build.annotations.CheckDiscard;
++import org.chromium.build.annotations.Nullable;
+
+ import java.util.Arrays;
++import java.util.Collections;
++import java.util.List;
+
+ /**
+  * Wrapper utility class for both (Base)ChromePreferenceKeys and SharedPreferencesManager,
+  * which also serves as storage of added PreferenceKeys.
+  */
+ public final class SharedPrefsUtils {
+
++    // Registry for custom preference keys
++    public static final @Nullable PreferenceKeyRegistry REGISTRY =
++            (BuildConfig.ENABLE_ASSERTS
++                    ? new PreferenceKeyRegistry(
++                            "shared_prefs_utils",
++                            getKeysInUseList(),
++                            Collections.emptyList(),
++                            Collections.emptyList())
++                    : null);
++
++    @CheckDiscard("Validation is performed in tests and in debug builds.")
++    private static List<String> getKeysInUseList() {
++        return Arrays.asList(
++            SharedPrefsExt.CLOSE_TABS_ON_EXIT.getKey(),
++            SharedPrefsExt.OPEN_LINKS_IN_INCOGNITO.getKey()
++        );
++    }
++
+     public static class BoolSharedPref {
+         private final String key;
+         private boolean defValue;
+
+         BoolSharedPref(String key, boolean defValue) {
+@@ -125,18 +147,13 @@ public final class SharedPrefsUtils {
+         public static final BoolSharedPref OPEN_LINKS_IN_INCOGNITO =
+                 new BoolSharedPref("open_links_in_incognito", false);
+     }
+
+     static SharedPreferencesManager getSharedPrefManager() {
+-        return SharedPreferencesManager.getInstanceForRegistry(null);
++        return SharedPreferencesManager.getInstanceForRegistry(REGISTRY);
+     }
+
+     @CheckDiscard("Validation is performed in tests and in debug builds.")
+     static boolean isKeyInUse(String key) {
+-        // clang-format off
+-        return Arrays.asList(
+-            SharedPrefsExt.CLOSE_TABS_ON_EXIT.getKey(),
+-            SharedPrefsExt.OPEN_LINKS_IN_INCOGNITO.getKey()
+-        ).contains(key);
+-        // clang-format on
++        return getKeysInUseList().contains(key);
+     }
+ }
+diff --git a/chrome/browser/preferences/android/java/src/org/chromium/chrome/browser/preferences/AllPreferenceKeyRegistries.java b/chrome/browser/preferences/android/java/src/org/chromium/chrome/browser/preferences/AllPreferenceKeyRegistries.java
+index 8555cdda69458..33a43818a78e8 100644
+--- a/chrome/browser/preferences/android/java/src/org/chromium/chrome/browser/preferences/AllPreferenceKeyRegistries.java
++++ b/chrome/browser/preferences/android/java/src/org/chromium/chrome/browser/preferences/AllPreferenceKeyRegistries.java
+@@ -6,10 +6,11 @@ package org.chromium.chrome.browser.preferences;
+
+ import androidx.annotation.VisibleForTesting;
+
+ import org.chromium.base.shared_preferences.KnownPreferenceKeyRegistries;
+ import org.chromium.base.shared_preferences.PreferenceKeyRegistry;
++import org.chromium.base.shared_preferences.SharedPrefsUtils;
+ import org.chromium.build.annotations.CheckDiscard;
+ import org.chromium.build.annotations.NullMarked;
+ import org.chromium.components.cached_flags.CachedFlagsSharedPreferences;
+
+ import java.util.Set;
+@@ -17,11 +18,12 @@ import java.util.Set;
+ @CheckDiscard("Preference key checking should only happen on build with asserts")
+ @NullMarked
+ public class AllPreferenceKeyRegistries {
+     @VisibleForTesting
+     static final Set<PreferenceKeyRegistry> KNOWN_REGISTRIES =
+-            Set.of(ChromeSharedPreferences.REGISTRY, CachedFlagsSharedPreferences.REGISTRY);
++            Set.of(ChromeSharedPreferences.REGISTRY, CachedFlagsSharedPreferences.REGISTRY,
++                    SharedPrefsUtils.REGISTRY);
+
+     public static void initializeKnownRegistries() {
+         KnownPreferenceKeyRegistries.initializeKnownRegistries(KNOWN_REGISTRIES);
+     }
+ }
+diff --git a/chrome/browser/extensions/favicon/favicon_util.cc b/chrome/browser/extensions/favicon/favicon_util.cc
+index c29655448854c..bc449a2fd6ba4 100644
+--- a/chrome/browser/extensions/favicon/favicon_util.cc
++++ b/chrome/browser/extensions/favicon/favicon_util.cc
+@@ -17,12 +17,15 @@
+ #include "extensions/common/extension.h"
+ #include "extensions/common/permissions/permissions_data.h"
+ #include "ui/base/resource/resource_bundle.h"
+ #include "ui/base/resource/resource_scale_factor.h"
+ #include "ui/gfx/favicon_size.h"
++#include "build/build_config.h"
+ #include "ui/native_theme/native_theme.h"
++#if !BUILDFLAG(IS_ANDROID)
+ #include "ui/resources/grit/ui_resources.h"
++#endif
+ #include "url/gurl.h"
+
+ static_assert(BUILDFLAG(ENABLE_EXTENSIONS_CORE));
+
+ namespace extensions {
+@@ -30,10 +33,11 @@ class Extension;
+
+ namespace favicon_util {
+
+ namespace {
+
++#if !BUILDFLAG(IS_ANDROID)
+ int GetResourceID(int size_in_pixels) {
+   const bool is_dark =
+       ui::NativeTheme::GetInstanceForNativeUi()->preferred_color_scheme() ==
+       ui::NativeTheme::PreferredColorScheme::kDark;
+   if (size_in_pixels >= 64) {
+@@ -42,21 +46,27 @@ int GetResourceID(int size_in_pixels) {
+   if (size_in_pixels >= 32) {
+     return is_dark ? IDR_DEFAULT_FAVICON_DARK_32 : IDR_DEFAULT_FAVICON_32;
+   }
+   return is_dark ? IDR_DEFAULT_FAVICON_DARK : IDR_DEFAULT_FAVICON;
+ }
++#endif  // !BUILDFLAG(IS_ANDROID)
+
+ void OnFaviconAvailable(FaviconCallback callback,
+-                        int size_in_pixels,
++                        [[maybe_unused]] int size_in_pixels,
+                         const favicon_base::FaviconRawBitmapResult& result) {
+   if (result.is_valid()) {
+     std::move(callback).Run(result.bitmap_data);
+   } else {
++#if !BUILDFLAG(IS_ANDROID)
+     std::move(callback).Run(
+         ui::ResourceBundle::GetSharedInstance().LoadDataResourceBytesForScale(
+             GetResourceID(size_in_pixels),
+             ui::GetSupportedResourceScaleFactor(1)));
++#else
++    // Default favicon resources not available on Android
++    std::move(callback).Run(nullptr);
++#endif  // !BUILDFLAG(IS_ANDROID)
+   }
+ }
+
+ }  // namespace
+
+diff --git a/chrome/browser/ui/webui/current_channel_logo.cc b/chrome/browser/ui/webui/current_channel_logo.cc
+index d9fca84f38db0..f9952ced289bb 100644
+--- a/chrome/browser/ui/webui/current_channel_logo.cc
++++ b/chrome/browser/ui/webui/current_channel_logo.cc
+@@ -24,11 +24,11 @@ int CurrentChannelLogoResourceId() {
+ #else
+     case version_info::Channel::CANARY:
+     case version_info::Channel::DEV:
+     case version_info::Channel::BETA:
+     case version_info::Channel::STABLE:
+-      NOTREACHED();
++      return IDR_PRODUCT_LOGO_32;
+ #endif
+     case version_info::Channel::UNKNOWN:
+       return IDR_PRODUCT_LOGO_32;
+   }
+   return -1;

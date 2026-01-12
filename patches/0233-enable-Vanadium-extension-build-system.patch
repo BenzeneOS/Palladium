@@ -1,0 +1,1138 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Amaan Qureshi <git@amaanq.com>
+Date: Sat, 11 Jan 2026 00:00:00 +0000
+Subject: [PATCH] enable Vanadium extension support build system
+
+Port extension support patches to enable Chrome extensions on Android.
+Uses is_desktop_android_vanadium flag to avoid conflicts with Google's
+broken is_desktop_android implementation.
+
+This patch modifies BUILD.gn and .gni files to enable the extension
+build system on Android.
+---
+
+diff --git a/android_webview/BUILD.gn b/android_webview/BUILD.gn
+index 1a7350b20494a..7879b9a1a89e8 100644
+--- a/android_webview/BUILD.gn
++++ b/android_webview/BUILD.gn
+@@ -1299,11 +1299,11 @@ declare_args() {
+       # - WebView and Chrome x86, see https://crbug.com/967343.
+       # *IMPORTANT*: The x86 and x64 architectures are used to test orderfile
+       # logic more easily on an emulator, so the decision to use the arm64
+       # orderfile for x64 (instead of arm32) is somewhat arbitrary. We just
+       # needed to use some real orderfile.
+-      if (is_desktop_android && current_cpu == "x64") {
++      if (is_desktop_android_false && current_cpu == "x64") {
+         # For Android Desktop x64, orderfile is disabled, see
+         # https://crbug.com/422005929.
+         webview_orderfile_path = ""
+       } else if (current_cpu == "arm64" || current_cpu == "x64") {
+         webview_orderfile_path =
+diff --git a/base/base_android_library_ext.gni b/base/base_android_library_ext.gni
+index 5d007a5e9dcf8..7f62ddb48aad7 100644
+--- a/base/base_android_library_ext.gni
++++ b/base/base_android_library_ext.gni
+@@ -17,10 +17,11 @@ base_library_loader_java_ext_java_sources = [
+   "android/java/src/org/chromium/base/config/VanadiumConfigBridge.java",
+ ]
+ 
+ base_library_loader_java_ext_deps = [
+   "//vanadium/android_config/proto:browser_config_parser_java",
++  "//vanadium/android_config/proto:config_proto_java",
+   "//vanadium/ext/custom_os:custom_os_apis_java",
+ ]
+ 
+ base_library_loader_java_ext_srcjar_deps = [
+ ]
+diff --git a/build/BUILD.gn b/build/BUILD.gn
+index 95ceaf090e6c0..5c29da8c3c2c4 100644
+--- a/build/BUILD.gn
++++ b/build/BUILD.gn
+@@ -95,34 +95,19 @@ buildflag_header("ios_buildflags") {
+   _is_ios_app_extension = is_ios && ios_is_app_extension
+   flags = [ "IS_IOS_APP_EXTENSION=$_is_ios_app_extension" ]
+ }
+ 
+ #
+-# NOTE: IS_DESKTOP_ANDROID should be used sparingly.
+-#
+-# General Recommendation:
+-#   Avoid using this build time flag whenever possible. Rely on runtime
+-#   detection of features such as:
+-#     - Large screen availability
+-#     - Input modalities (e.g., touch, keyboard, mouse)
+-#     - Relevant Android system flags.
+-#
+-# DO:
+-#   - Use this flag ONLY for features with substantial binary size impact,
+-#     such as DevTools or Extensions, which contain significant code and
+-#     resource sizes.
+-#
+-# DON'T:
+-#   - Use this flag to enable feature flags or experiments.
+-#   - Use this flag in code shared with Android WebView.
+-#     Restrict its usage to the //chrome code directory whenever possible.
+-#
+-# If you're unsure please reach out to is-android-desktop-help@google.com
++# NOTE: IS_DESKTOP_ANDROID_VANADIUM should be used sparingly.
++# Vanadium: Use vanadium naming for Android extensions support
+ #
+ buildflag_header("android_buildflags") {
+   header = "android_buildflags.h"
+-  flags = [ "IS_DESKTOP_ANDROID=$is_desktop_android" ]
++  flags = [
++    "IS_DESKTOP_ANDROID_VANADIUM=$is_desktop_android_vanadium",
++    "IS_DESKTOP_ANDROID_FALSE=false",
++  ]
+ }
+ 
+ if (build_with_chromium) {
+   group("gold_common_pytype") {
+     testonly = true
+diff --git a/build/config/android/rules.gni b/build/config/android/rules.gni
+index fc2830e113040..bcf9b584d8378 100644
+--- a/build/config/android/rules.gni
++++ b/build/config/android/rules.gni
+@@ -2018,12 +2018,12 @@ if (!is_robolectric && enable_java_templates) {
+           defines += [ "_CRONET_FOR_AOSP_BUILD" ]
+         }
+       } else {
+         defines += [ "_LOGTAG_PREFIX=cr_" ]
+       }
+-      if (is_desktop_android) {
+-        defines += [ "_IS_DESKTOP_ANDROID" ]
++      if (is_desktop_android_vanadium) {
++        defines += [ "_IS_DESKTOP_ANDROID_VANADIUM" ]
+       }
+ 
+       if (enable_javaless_renderers) {
+         defines += [ "_JAVALESS_RENDERERS_AVAILABLE" ]
+       }
+@@ -4085,10 +4085,12 @@ if (!is_robolectric && enable_java_templates) {
+       _aidl_config = "${_aidl_target}__config"
+       config(_aidl_config) {
+         include_dirs = [ "$target_gen_dir" ]
+       }
+       source_set("${_aidl_target}_native") {
++        # Binder NDK headers aren't compatible with C++ modules on 32-bit
++        use_libcxx_modules = false
+         sources = _cpp_outputs + _header_outputs
+         deps = [ ":$_aidl_target" ]
+         if (defined(invoker.deps)) {
+           foreach(_dep, invoker.deps) {
+             deps += [ "${_dep}_native" ]
+diff --git a/build/config/chrome_build.gni b/build/config/chrome_build.gni
+index 99758f6df440f..e27d364e8c24e 100644
+--- a/build/config/chrome_build.gni
++++ b/build/config/chrome_build.gni
+@@ -32,11 +32,13 @@ declare_args() {
+   # enhancing speed at the expense of resources such as binary sizes and memory.
+   is_high_end_android = target_cpu == "arm64" || target_cpu == "x64"
+ 
+   # Set to true to set defaults that enable features on Android that are more
+   # typically available on desktop.
+-  is_desktop_android = false
++  # Vanadium: Use vanadium naming to avoid conflicts with Google's broken implementation
++  is_desktop_android_vanadium = is_android
++  is_desktop_android_false = false
+ 
+   if (is_android) {
+     # By default, Trichrome channels are compiled using separate package names.
+     # Set this to 'true' to compile Trichrome channels using the Stable channel's
+     # package name. This currently only affects builds with `android_channel =
+@@ -54,16 +56,16 @@ declare_args() {
+ is_internal_chrome_branded = enable_src_internal && is_chrome_branded
+ 
+ # Ensure !is_android implies !is_high_end_android.
+ is_high_end_android = is_high_end_android && is_android
+ 
+-if (is_desktop_android) {
++if (is_desktop_android_vanadium) {
+   assert(target_os == "android",
+          "Target must be Android to use is_desktop_android.")
+ 
+   # Disable for non-android secondary toolchains.
+-  is_desktop_android = is_android
++  is_desktop_android_vanadium = is_android
+ }
+ 
+ declare_args() {
+   # Whether to apply size->speed trade-offs to the secondary toolchain.
+   # Relevant only for 64-bit target_cpu.
+diff --git a/build/config/compiler/BUILD.gn b/build/config/compiler/BUILD.gn
+index 69d131019b067..4212c9a0f96c8 100644
+--- a/build/config/compiler/BUILD.gn
++++ b/build/config/compiler/BUILD.gn
+@@ -239,11 +239,11 @@ if (is_android) {
+         # - WebView and Chrome x86, see https://crbug.com/967343.
+         # *IMPORTANT*: The x86 and x64 architectures are used to test orderfile
+         # logic more easily on an emulator, so the decision to use the arm64
+         # orderfile for x64 (instead of arm32) is somewhat arbitrary. We just
+         # needed to use some real orderfile.
+-        if (is_desktop_android && current_cpu == "x64") {
++        if (is_desktop_android_false && current_cpu == "x64") {
+           # For Android Desktop x64, orderfile is disabled, see
+           # https://crbug.com/422005929.
+           chrome_orderfile_path = ""
+         } else if (current_cpu == "arm64" || current_cpu == "x64") {
+           chrome_orderfile_path =
+diff --git a/build/config/compiler/pgo/BUILD.gn b/build/config/compiler/pgo/BUILD.gn
+index 1b987060c9ae2..b35fd1630fd98 100644
+--- a/build/config/compiler/pgo/BUILD.gn
++++ b/build/config/compiler/pgo/BUILD.gn
+@@ -62,11 +62,11 @@ config("pgo_optimization_flags") {
+       }
+     } else if (is_linux) {
+       _pgo_target = "linux"
+     } else if (is_android) {
+       # Use |current_cpu| and not |target_cpu|; for Android we may built both.
+-      if (is_desktop_android && current_cpu == "x64") {
++      if (is_desktop_android_false && current_cpu == "x64") {
+         _pgo_target = "android-desktop-x64"
+       } else if (current_cpu == "arm64") {
+         _pgo_target = "android-arm64"
+       } else {
+         _pgo_target = "android-arm32"
+diff --git a/chrome/android/BUILD.gn b/chrome/android/BUILD.gn
+index d30231626910f..aff1f3f2118e3 100644
+--- a/chrome/android/BUILD.gn
++++ b/chrome/android/BUILD.gn
+@@ -945,11 +945,11 @@ if (_is_default_toolchain) {
+       "//components/saved_tab_groups/public:conversion_utils_java",
+       "//components/segmentation_platform/internal:internal_java",
+       "//components/visited_url_ranking/internal:internal_java",
+     ]
+ 
+-    if (is_desktop_android) {
++    if (is_desktop_android_vanadium) {
+       deps += [
+         "//chrome/browser/ui/android/extensions/windowing/internal:java",
+         "//chrome/browser/ui/browser_window/internal:java",
+       ]
+     } else {
+@@ -1215,11 +1215,11 @@ if (_is_default_toolchain) {
+ 
+     if (enable_extensions_core) {
+       deps += [ "//chrome/browser/ui/android/extensions:junit" ]
+     }
+ 
+-    if (is_desktop_android) {
++    if (is_desktop_android_vanadium) {
+       deps += [ "//chrome/browser/ui/browser_window/internal:junit" ]
+     }
+   }
+ 
+   # Files used by chrome integration and unit javatests.
+@@ -2457,11 +2457,11 @@ if (_is_default_toolchain) {
+       "//chrome/browser/ui/plus_addresses/android:javatests",
+       "//components/embedder_support/android:virtual_structure_javatests",
+       "//components/ip_protection/android/android_auth_client_lib/javatests:ip_protection_auth_javatests",
+     ]
+ 
+-    if (is_desktop_android) {
++    if (is_desktop_android_vanadium) {
+       deps += [
+         "//chrome/browser/ui/android/extensions/windowing/internal:javatests",
+         "//chrome/browser/ui/browser_window/internal:javatests",
+       ]
+     }
+diff --git a/chrome/android/chrome_ext_deps.gni b/chrome/android/chrome_ext_deps.gni
+index 522092c9820ce..47676b71339df 100644
+--- a/chrome/android/chrome_ext_deps.gni
++++ b/chrome/android/chrome_ext_deps.gni
+@@ -3,9 +3,10 @@
+ # found in the LICENSE file.
+ 
+ chrome_ext_deps = [
+   "//chrome/browser/subresource_filter/android:java",
+   "//vanadium/android_config/proto:browser_config_parser_java",
++  "//vanadium/android_config/proto:config_proto_java",
+ ]
+ 
+ chrome_ext_srcjar_deps = [
+ ]
+diff --git a/chrome/android/chrome_public_apk_tmpl.gni b/chrome/android/chrome_public_apk_tmpl.gni
+index 758a6891f4571..132a1de0c7d91 100644
+--- a/chrome/android/chrome_public_apk_tmpl.gni
++++ b/chrome/android/chrome_public_apk_tmpl.gni
+@@ -43,11 +43,11 @@ default_chrome_public_jinja_variables = [
+   "channel=$android_channel",
+   "enable_cardboard=$enable_cardboard",
+   "enable_vr=$enable_vr",
+   "enable_openxr=$enable_openxr",
+   "enable_arcore=$enable_arcore",
+-  "is_desktop_android=$is_desktop_android",
++  "is_desktop_android_vanadium=$is_desktop_android_vanadium",
+   "enable_screen_capture=$enable_screen_capture",
+   "zygote_preload_class=org.chromium.content_public.app.ZygotePreload",
+   "config_apk_package=$config_apk_package",
+ ]
+ 
+diff --git a/chrome/browser/BUILD.gn b/chrome/browser/BUILD.gn
+index 690cf4410d444..cf3bc82f2f0c4 100644
+--- a/chrome/browser/BUILD.gn
++++ b/chrome/browser/BUILD.gn
+@@ -4882,11 +4882,11 @@ static_library("browser") {
+         "component_updater/hyphenation_component_installer.h",
+       ]
+     }
+   }
+ 
+-  if (!is_android || is_desktop_android) {
++  if (!is_android || is_desktop_android_vanadium) {
+     deps += [ "//chrome/browser/ui/browser_window" ]
+   }
+ 
+   if (enable_screen_capture) {
+     sources += [
+@@ -7608,11 +7608,11 @@ static_library("browser") {
+       "media/cast_remoting_connector.h",
+     ]
+     deps += [ "//media/mojo/mojom:remoting" ]
+   }
+ 
+-  if (is_android && !enable_desktop_android_extensions) {
++  if (is_android && !enable_desktop_android_extensions_vanadium) {
+     sources += [ "download/download_crx_util_android.cc" ]
+   }
+ 
+   if (enable_extensions_core) {
+     sources += [
+@@ -7922,11 +7922,11 @@ static_library("browser") {
+     }
+   }
+ 
+   # TODO(https://crbug.com/356905053): Add more dependencies here and merge this
+   # block with the `enable_extensions` block above.
+-  if (enable_desktop_android_extensions) {
++  if (enable_desktop_android_extensions_vanadium) {
+     sources += [
+       # TODO(https://crbug.com/356905053): These files are temporary workarounds
+       # allow for a lightweight extensions runtime in desktop-android builds.
+       # They should be removed.
+       "extensions/extension_menu_model_android.cc",
+@@ -8694,11 +8694,11 @@ static_library("browser_generated_files") {
+     if (!is_official_build) {
+       public_deps +=
+           [ "//chrome/browser/ui/webui/new_tab_page/foo:mojo_bindings" ]
+     }
+   }
+-  if (!is_android || is_desktop_android) {
++  if (!is_android || is_desktop_android_vanadium) {
+     public_deps += [ "//chrome/browser/ui/webui/discards:mojo_bindings" ]
+   }
+ 
+   if (is_chromeos) {
+     public_deps += [
+diff --git a/chrome/browser/devtools/BUILD.gn b/chrome/browser/devtools/BUILD.gn
+index 8c4c78a948e8d..09af36495d33f 100644
+--- a/chrome/browser/devtools/BUILD.gn
++++ b/chrome/browser/devtools/BUILD.gn
+@@ -343,11 +343,11 @@ static_library("devtools") {
+         "device/cast_device_provider.h",
+       ]
+     }
+   }
+ 
+-  if (!is_android || enable_desktop_android_extensions) {
++  if (!is_android || enable_desktop_android_extensions_vanadium) {
+     sources += [
+       "global_confirm_info_bar.cc",
+       "global_confirm_info_bar.h",
+     ]
+   }
+diff --git a/chrome/browser/extensions/BUILD.gn b/chrome/browser/extensions/BUILD.gn
+index 1f0f86c655ec8..46180b9f31e86 100644
+--- a/chrome/browser/extensions/BUILD.gn
++++ b/chrome/browser/extensions/BUILD.gn
+@@ -1718,11 +1718,11 @@ source_set("chrome_extensions_browser_client") {
+     "//extensions/browser/api/content_settings",
+     "//extensions/browser/updater",
+     "//extensions/browser/updater:keepalive",
+   ]
+ 
+-  if (enable_desktop_android_extensions) {
++  if (enable_desktop_android_extensions_vanadium) {
+     sources += [ "chrome_extensions_browser_client_android.cc" ]
+ 
+     deps += [
+       "//chrome/browser:browser_process",
+       "//chrome/browser/extensions",
+diff --git a/chrome/browser/media/router/BUILD.gn b/chrome/browser/media/router/BUILD.gn
+index c266dc9038b3a..4b422ba37ea11 100644
+--- a/chrome/browser/media/router/BUILD.gn
++++ b/chrome/browser/media/router/BUILD.gn
+@@ -259,11 +259,11 @@ if (!is_android) {
+ static_library("test_support") {
+   testonly = true
+   deps = []
+   sources = []
+ 
+-  if (!is_android || is_desktop_android) {
++  if (!is_android || is_desktop_android_vanadium) {
+     deps += [
+       "//base",
+       "//chrome/browser/media/router/discovery",
+       "//testing/gmock",
+     ]
+@@ -410,11 +410,11 @@ source_set("unittests") {
+       "//third_party/openscreen/src/cast/common:public",
+     ]
+   }
+ 
+   # Traditional desktop platforms and desktop android with extensions support.
+-  if (!is_android || enable_desktop_android_extensions) {
++  if (!is_android || enable_desktop_android_extensions_vanadium) {
+     deps += [ "//chrome/browser/media/router/discovery:test_support" ]
+   }
+ 
+   if (enable_openscreen_protocol) {
+     include_dirs = [ "//third_party/openscreen/src" ]
+diff --git a/chrome/browser/media/router/discovery/BUILD.gn b/chrome/browser/media/router/discovery/BUILD.gn
+index 4d439e6a82b2c..e288d06e0b0b5 100644
+--- a/chrome/browser/media/router/discovery/BUILD.gn
++++ b/chrome/browser/media/router/discovery/BUILD.gn
+@@ -2,11 +2,11 @@
+ # Use of this source code is governed by a BSD-style license that can be
+ # found in the LICENSE file.
+ 
+ import("//build/config/chrome_build.gni")
+ 
+-assert(!is_android || is_desktop_android, "Not supported on mobile")
++assert(!is_android || is_desktop_android_vanadium, "Not supported on mobile")
+ assert(!is_fuchsia, "Fuchsia shouldn't use anything in //chrome")
+ 
+ static_library("discovery") {
+   inputs = [ "$root_gen_dir/chrome/grit/generated_resources.h" ]
+   sources = [
+diff --git a/chrome/browser/resources/BUILD.gn b/chrome/browser/resources/BUILD.gn
+index 6b377ecf8d48c..5ebbaf03138f4 100644
+--- a/chrome/browser/resources/BUILD.gn
++++ b/chrome/browser/resources/BUILD.gn
+@@ -114,11 +114,11 @@ group("resources") {
+       "//chrome/browser/resources/media/mei_preload:component",
+       "//components/privacy_sandbox/privacy_sandbox_attestations/preload:component",
+     ]
+   }
+ 
+-  if (is_win || is_mac || is_linux || is_chromeos || is_desktop_android) {
++  if (is_win || is_mac || is_linux || is_chromeos || is_desktop_android_vanadium) {
+     public_deps += [ "discards:resources" ]
+   }
+ 
+   if (is_win || is_mac || is_linux) {
+     public_deps += [
+diff --git a/chrome/browser/resources/discards/BUILD.gn b/chrome/browser/resources/discards/BUILD.gn
+index d3f6092e823cc..53891299d1dee 100644
+--- a/chrome/browser/resources/discards/BUILD.gn
++++ b/chrome/browser/resources/discards/BUILD.gn
+@@ -3,11 +3,11 @@
+ # found in the LICENSE file.
+ 
+ import("//ui/webui/resources/tools/build_webui.gni")
+ import("//ui/webui/resources/tools/generate_grd.gni")
+ 
+-assert(!is_android || is_desktop_android)
++assert(!is_android || is_desktop_android_vanadium)
+ 
+ build_webui("build") {
+   grd_prefix = "discards"
+ 
+   static_files = [ "discards.html" ]
+diff --git a/chrome/browser/ui/BUILD.gn b/chrome/browser/ui/BUILD.gn
+index 6fa22a1e7ef1e..392f88865c0a3 100644
+--- a/chrome/browser/ui/BUILD.gn
++++ b/chrome/browser/ui/BUILD.gn
+@@ -667,11 +667,11 @@ static_library("ui") {
+     "//ui/strings",
+     "//ui/webui",
+     "//v8:v8_version",
+   ]
+ 
+-  if (!is_android || is_desktop_android) {
++  if (!is_android || is_desktop_android_vanadium) {
+     sources += [
+       "browser_navigator.h",
+       "incognito_allowed_url.cc",
+       "incognito_allowed_url.h",
+     ]
+@@ -682,11 +682,11 @@ static_library("ui") {
+       "//chrome/browser/ui/browser_window",
+       "//chrome/browser/ui/browser_window/internal",
+     ]
+ 
+     # Desktop-Android-only dependencies.
+-    if (is_desktop_android) {
++    if (is_desktop_android_vanadium) {
+       sources += [ "//chrome/browser/ui/android/browser_navigator_android.cc" ]
+       deps += [
+         "//chrome/browser/ui/android/extensions/windowing/internal",
+         "//chrome/browser/ui/browser_window:create_browser_window",
+       ]
+@@ -2877,11 +2877,11 @@ static_library("ui") {
+     ]
+ 
+     allow_circular_includes_from += [ "//chrome/browser/ui/wallet" ]
+   }
+ 
+-  if (is_win || is_mac || is_linux || is_chromeos || is_desktop_android) {
++  if (is_win || is_mac || is_linux || is_chromeos || is_desktop_android_vanadium) {
+     sources += [
+       "webui/discards/discards_ui.cc",
+       "webui/discards/discards_ui.h",
+       "webui/discards/graph_dump_impl.cc",
+       "webui/discards/graph_dump_impl.h",
+diff --git a/chrome/browser/ui/android/extensions/BUILD.gn b/chrome/browser/ui/android/extensions/BUILD.gn
+index a3b4d0b0d8435..8f93a86043031 100644
+--- a/chrome/browser/ui/android/extensions/BUILD.gn
++++ b/chrome/browser/ui/android/extensions/BUILD.gn
+@@ -76,11 +76,11 @@ if (enable_extensions_core) {
+ 
+ # Generate feature-specific flags to avoid dependency cycles with the main
+ # BuildConfig.
+ java_cpp_template("generate_buildflags") {
+   sources = [ "java/templates/ExtensionsBuildflags.template" ]
+-  if (enable_desktop_android_extensions) {
++  if (enable_desktop_android_extensions_vanadium) {
+     defines = [ "_ENABLE_DESKTOP_ANDROID_EXTENSIONS" ]
+   }
+ }
+ 
+ android_library("test_support_java") {
+@@ -156,10 +156,11 @@ android_resources("java_resources") {
+     "java/res/layout/extensions_menu_footer.xml",
+     "java/res/layout/extensions_menu_header.xml",
+     "java/res/layout/extensions_menu_item.xml",
+     "java/res/values/dimens.xml",
+     "java/res/values/integers.xml",
++    "java/res/values/strings.xml",
+   ]
+ 
+   deps = [
+     "//chrome/app:java_strings_grd",
+     "//chrome/browser/ui/android/strings:ui_strings_grd",
+diff --git a/chrome/browser/ui/android/extensions/windowing/internal/BUILD.gn b/chrome/browser/ui/android/extensions/windowing/internal/BUILD.gn
+index 15fe37c7a1e65..621316b19f8bd 100644
+--- a/chrome/browser/ui/android/extensions/windowing/internal/BUILD.gn
++++ b/chrome/browser/ui/android/extensions/windowing/internal/BUILD.gn
+@@ -4,11 +4,11 @@
+ 
+ import("//build/config/android/rules.gni")
+ import("//build/config/chrome_build.gni")
+ import("//third_party/jni_zero/jni_zero.gni")
+ 
+-assert(is_desktop_android)
++assert(is_desktop_android_vanadium)
+ 
+ source_set("internal") {
+   sources = [
+     "extension_window_controller_bridge.cc",
+ 
+diff --git a/chrome/browser/ui/android/tab_model/BUILD.gn b/chrome/browser/ui/android/tab_model/BUILD.gn
+index e4d68daddfb67..1ec1193e86f36 100644
+--- a/chrome/browser/ui/android/tab_model/BUILD.gn
++++ b/chrome/browser/ui/android/tab_model/BUILD.gn
+@@ -65,11 +65,11 @@ source_set("impl") {
+     "//content/public/browser",
+     "//content/public/common",
+     "//ui/base:types",
+   ]
+ 
+-  if (is_desktop_android) {
++  if (is_desktop_android_vanadium) {
+     deps += [
+       "//chrome/browser/ui/browser_window",
+       "//chrome/browser/ui/browser_window/internal",
+     ]
+   }
+@@ -95,11 +95,11 @@ source_set("test_support") {
+     "//chrome/browser/flags:flags_android",
+     "//chrome/browser/profiles:profile",
+     "//chrome/browser/ui/android/tab_model",
+   ]
+ 
+-  if (is_desktop_android) {
++  if (is_desktop_android_vanadium) {
+     deps += [ "//chrome/browser/ui/browser_window" ]
+   }
+ }
+ 
+ source_set("unit_tests") {
+diff --git a/chrome/browser/ui/browser_window/BUILD.gn b/chrome/browser/ui/browser_window/BUILD.gn
+index 73161aa440890..ee0fad066b036 100644
+--- a/chrome/browser/ui/browser_window/BUILD.gn
++++ b/chrome/browser/ui/browser_window/BUILD.gn
+@@ -2,11 +2,11 @@
+ # Use of this source code is governed by a BSD-style license that can be
+ # found in the LICENSE file.
+ 
+ import("//chrome/common/features.gni")
+ 
+-assert(is_win || is_mac || is_linux || is_chromeos || is_desktop_android)
++assert(is_win || is_mac || is_linux || is_chromeos || is_desktop_android_vanadium)
+ 
+ # This is the public interface for a browser window. Most features in
+ # //chrome/browser depend on this interface, and thus to prevent circular
+ # dependencies this interface should not depend on anything else in //chrome.
+ source_set("browser_window") {
+diff --git a/chrome/browser/ui/browser_window/internal/BUILD.gn b/chrome/browser/ui/browser_window/internal/BUILD.gn
+index a88c4e6c1947a..2702ee6ac7280 100644
+--- a/chrome/browser/ui/browser_window/internal/BUILD.gn
++++ b/chrome/browser/ui/browser_window/internal/BUILD.gn
+@@ -2,11 +2,11 @@
+ # Use of this source code is governed by a BSD-style license that can be
+ # found in the LICENSE file.
+ 
+ import("//chrome/common/features.gni")
+ 
+-assert(is_win || is_mac || is_linux || is_chromeos || is_desktop_android)
++assert(is_win || is_mac || is_linux || is_chromeos || is_desktop_android_vanadium)
+ 
+ source_set("internal") {
+   sources = [ "create_browser_window.cc" ]
+   deps = [
+     "//base",
+diff --git a/chrome/browser/ui/prefs/BUILD.gn b/chrome/browser/ui/prefs/BUILD.gn
+index bbb3774598160..d0628f3b239e8 100644
+--- a/chrome/browser/ui/prefs/BUILD.gn
++++ b/chrome/browser/ui/prefs/BUILD.gn
+@@ -65,11 +65,11 @@ source_set("impl") {
+   if (is_linux) {
+     deps += [ "//ui/linux:linux_ui" ]
+   }
+ }
+ 
+-if (!is_android || enable_desktop_android_extensions) {
++if (!is_android || enable_desktop_android_extensions_vanadium) {
+   source_set("browser_tests") {
+     testonly = true
+     defines = [ "HAS_OUT_OF_PROC_TEST_RUNNER" ]
+     sources = [ "prefs_tab_helper_browsertest.cc" ]
+ 
+@@ -83,11 +83,11 @@ if (!is_android || enable_desktop_android_extensions) {
+       "//components/prefs",
+       "//content/test:test_support",
+       "//third_party/blink/public/common:headers",
+     ]
+ 
+-    if (enable_desktop_android_extensions) {
++    if (enable_desktop_android_extensions_vanadium) {
+       deps += [ "//chrome/test:test_support_ui_android" ]
+     } else {
+       deps += [ "//chrome/test:test_support_ui" ]
+     }
+   }
+diff --git a/chrome/browser/ui/webid/BUILD.gn b/chrome/browser/ui/webid/BUILD.gn
+index 59227d51d01fc..332f7650d3e47 100644
+--- a/chrome/browser/ui/webid/BUILD.gn
++++ b/chrome/browser/ui/webid/BUILD.gn
+@@ -35,11 +35,11 @@ source_set("webid") {
+     "//components/permissions",
+     "//skia",
+     "//ui/base",
+   ]
+ 
+-  if (!is_android || is_desktop_android) {
++  if (!is_android || is_desktop_android_vanadium) {
+     deps += [ "//chrome/browser/ui/browser_window" ]
+   }
+ }
+ 
+ if (!is_android) {
+diff --git a/chrome/chrome_paks.gni b/chrome/chrome_paks.gni
+index 29239d429913a..fa4f4b36f42ee 100644
+--- a/chrome/chrome_paks.gni
++++ b/chrome/chrome_paks.gni
+@@ -493,11 +493,11 @@ template("chrome_extra_paks") {
+         "$root_gen_dir/chrome/on_device_translation_internals_resources.pak",
+       ]
+       deps += [ "//chrome/browser/resources/app_settings:resources" ]
+     }
+ 
+-    if (is_win || is_mac || is_linux || is_chromeos || is_desktop_android) {
++    if (is_win || is_mac || is_linux || is_chromeos || is_desktop_android_vanadium) {
+       sources += [ "$root_gen_dir/chrome/discards_resources.pak" ]
+       deps += [ "//chrome/browser/resources/discards:resources" ]
+     }
+ 
+     if (is_win || is_mac || is_linux) {
+diff --git a/chrome/test/BUILD.gn b/chrome/test/BUILD.gn
+index 9ca54308e451d..ecec576d986fc 100644
+--- a/chrome/test/BUILD.gn
++++ b/chrome/test/BUILD.gn
+@@ -362,11 +362,11 @@ static_library("test_support") {
+       "//chrome/browser/ui/browser_window",
+       "//chrome/browser/ui/tabs:tab_list_interface",
+     ]
+   }
+ 
+-  if (enable_desktop_android_extensions) {
++  if (enable_desktop_android_extensions_vanadium) {
+     public_deps += [
+       "//extensions/browser:test_support",
+       "//extensions/common:test_support",
+     ]
+ 
+@@ -475,11 +475,11 @@ static_library("test_support") {
+   }
+ 
+   # TODO(https://crbug.com/356905053): Continue pulling more common test
+   # support pieces into here and eventually merge this with the
+   # `enable_extensions` block above.
+-  if (enable_desktop_android_extensions) {
++  if (enable_desktop_android_extensions_vanadium) {
+     deps += [ "//chrome/renderer/extensions" ]
+ 
+     public_deps += [
+       "//extensions:test_support",
+       "//extensions/browser:test_support",
+@@ -1533,11 +1533,11 @@ source_set("platform_browser_tests") {
+         [ "../browser/metrics/cros_pre_consent_metrics_manager_browsertest.cc" ]
+   } else {
+     sources += [ "../browser/enterprise/remote_commands/user_remote_commands_service_browsertest.cc" ]
+   }
+ 
+-  if (!is_android || enable_desktop_android_extensions) {
++  if (!is_android || enable_desktop_android_extensions_vanadium) {
+     deps += [ "//chrome/browser/ui/prefs:browser_tests" ]
+   }
+ 
+   if (enable_extensions) {
+     deps += [
+@@ -1786,11 +1786,11 @@ source_set("platform_browser_tests") {
+       deps += [
+         "//chrome/browser/apps/app_service",
+         "//chrome/browser/ui/browser_window",
+       ]
+     }
+-    if (!is_android || enable_desktop_android_extensions) {
++    if (!is_android || enable_desktop_android_extensions_vanadium) {
+       sources +=
+           [ "../browser/devtools/global_confirm_info_bar_browsertest.cc" ]
+     }
+   }
+ 
+@@ -2074,11 +2074,11 @@ if (is_android) {
+       "//content/test/data/",
+     ]
+ 
+     extra_args = []
+ 
+-    if (is_desktop_android) {
++    if (is_desktop_android_vanadium) {
+       sources +=
+           [ "../browser/ui/android/browser_navigator_android_browsertest.cc" ]
+       deps += [
+         "//base",
+         "//chrome/browser/flags:flags_android",
+@@ -2175,11 +2175,11 @@ if (is_android) {
+         "//chrome/android/features/dev_ui:java",
+         "//chrome/android/modules/dev_ui/provider:java",
+       ]
+     }
+ 
+-    if (enable_desktop_android_extensions) {
++    if (enable_desktop_android_extensions_vanadium) {
+       sources += [
+         # These API tests can't be part of platform_browser_tests because they
+         # run in interactive_ui_tests on Win/Mac/Linux.
+         "../browser/extensions/api/notifications/notifications_apitest.cc",
+         "../browser/extensions/api/omnibox/omnibox_api_interactive_test.cc",
+@@ -8049,15 +8049,15 @@ test("unit_tests") {
+     if (enable_extensions_core) {
+       sources += [ "../browser/android/extensions/extensions_url_override_state_tracker_unittest.cc" ]
+       deps += [ "//chrome/browser/android/extensions:android" ]
+     }
+ 
+-    if (!is_android || is_desktop_android) {
++    if (!is_android || is_desktop_android_vanadium) {
+       deps += [ "//chrome/browser/ui/browser_window/internal:unit_tests" ]
+     }
+ 
+-    if (is_desktop_android) {
++    if (is_desktop_android_vanadium) {
+       deps += [
+         # Unit test targets for //chrome/browser/ui/browser_window/internal.
+         #
+         # Note:
+         # Java test support classes must be a *direct* dependency of the
+diff --git a/chrome/version.gni b/chrome/version.gni
+index ec39dc47824bd..84e3e347373e3 100644
+--- a/chrome/version.gni
++++ b/chrome/version.gni
+@@ -81,11 +81,11 @@ if (target_os == "android") {
+       "webview_auto_version_code = \"@WEBVIEW_AUTO_VERSION_CODE@\" "
+ 
+   # Generate hybrid configurations for target_cpu's that can run in hybrid configurations.
+   # i.e. "riscv64" does not show up in this list, as it's a 64-bit-only target_cpu.
+   if (target_cpu == "arm64" || target_cpu == "x64") {
+-    if (is_desktop_android) {
++    if (is_desktop_android_vanadium) {
+       _version_dictionary_template +=
+           "chrome_desktop_version_code = \"@CHROME_DESKTOP_VERSION_CODE@\" "
+       _version_dictionary_template +=
+           "chrome_desktop_beta_version_code = \"@CHROME_DESKTOP_BETA_VERSION_CODE@\" "
+     }
+@@ -408,11 +408,11 @@ if (is_android) {
+           if (is_high_end_android) {
+             true_true_true_true = trichrome_64_32_high_version_code
+           } else {
+             true_true_true_true = trichrome_64_32_version_code
+           }
+-          if (is_desktop_android) {
++          if (is_desktop_android_vanadium) {
+             true_true_true_false = trichrome_desktop_64_version_code
+           } else {
+             true_true_true_false = trichrome_64_version_code
+           }
+           true_false_false_true = trichrome_32_version_code
+diff --git a/components/subresource_filter/android_config/BUILD.gn b/components/subresource_filter/android_config/BUILD.gn
+index 3e216ca2933dd..eee8946e42240 100644
+--- a/components/subresource_filter/android_config/BUILD.gn
++++ b/components/subresource_filter/android_config/BUILD.gn
+@@ -19,10 +19,11 @@ android_library("java") {
+   deps = [
+     ":subresource_filter_fetching_jni_headers",
+     "//base:base_java",
+     "//third_party/jni_zero:jni_zero_java",
+     "//vanadium/android_config/proto:browser_config_parser_java",
++    "//vanadium/android_config/proto:config_proto_java",
+   ]
+ }
+ 
+ source_set("android") {
+   sources = [
+diff --git a/content/app/BUILD.gn b/content/app/BUILD.gn
+index e3c038ff40c5f..36e6f343b2b1d 100644
+--- a/content/app/BUILD.gn
++++ b/content/app/BUILD.gn
+@@ -99,10 +99,12 @@ if (is_android && enable_javaless_renderers) {
+   # Since javaless renderers provide their own entry point into the shared
+   # library, for component builds to work, we require this to fall into the root
+   # component. Thus, you must add this directly to the shared_library target
+   # this should end up in.
+   source_set("javaless_renderer") {
++    # Binder NDK headers not compatible with C++ modules
++    use_libcxx_modules = false
+     configs += [ ":javaless_renderers_define" ]
+     sources = [ "android/javaless_child_process_service.cc" ]
+     deps = [
+       ":app",
+       "//base",
+diff --git a/extensions/browser/BUILD.gn b/extensions/browser/BUILD.gn
+index 5e3d03d0b7b98..efe63d1c54cea 100644
+--- a/extensions/browser/BUILD.gn
++++ b/extensions/browser/BUILD.gn
+@@ -8,11 +8,11 @@ import("//components/safe_browsing/buildflags.gni")
+ import("//extensions/buildflags/buildflags.gni")
+ import("//pdf/features.gni")
+ import("//rlz/buildflags/buildflags.gni")
+ import("//testing/libfuzzer/fuzzer_test.gni")
+ 
+-if (enable_desktop_android_extensions) {
++if (enable_desktop_android_extensions_vanadium) {
+   import("//build/config/android/rules.gni")
+ }
+ 
+ assert(enable_extensions_core)
+ 
+@@ -1159,11 +1159,11 @@ source_set("unit_tests") {
+   # TODO(crbug.com/40031409): Fix code that adds exit-time destructors and
+   # enable the diagnostic by removing this line.
+   configs += [ "//build/config/compiler:no_exit_time_destructors" ]
+ }
+ 
+-if (enable_desktop_android_extensions) {
++if (enable_desktop_android_extensions_vanadium) {
+   java_cpp_enum("extension_action_enums") {
+     sources = [ "extension_action.h" ]
+   }
+ }
+ 
+diff --git a/extensions/browser/api/system_cpu/BUILD.gn b/extensions/browser/api/system_cpu/BUILD.gn
+index f3443d0bacd03..51eb590b18bb7 100644
+--- a/extensions/browser/api/system_cpu/BUILD.gn
++++ b/extensions/browser/api/system_cpu/BUILD.gn
+@@ -32,11 +32,11 @@ source_set("system_cpu") {
+ 
+   if (is_mac) {
+     sources += [ "cpu_info_provider_mac.cc" ]
+   }
+ 
+-  if (is_linux || is_chromeos || enable_desktop_android_extensions) {
++  if (is_linux || is_chromeos || enable_desktop_android_extensions_vanadium) {
+     sources += [ "cpu_info_provider_linux.cc" ]
+   }
+ 
+   if (is_win) {
+     sources += [ "cpu_info_provider_win.cc" ]
+diff --git a/extensions/buildflags/BUILD.gn b/extensions/buildflags/BUILD.gn
+index cda6c650f7a51..25c7551c4020d 100644
+--- a/extensions/buildflags/BUILD.gn
++++ b/extensions/buildflags/BUILD.gn
+@@ -14,10 +14,10 @@ import("//extensions/buildflags/buildflags.gni")
+ 
+ buildflag_header("buildflags") {
+   header = "buildflags.h"
+   flags = [
+     "ENABLE_EXTENSIONS=$enable_extensions",
+-    "ENABLE_DESKTOP_ANDROID_EXTENSIONS=$enable_desktop_android_extensions",
++    "ENABLE_DESKTOP_ANDROID_EXTENSIONS_VANADIUM=$enable_desktop_android_extensions_vanadium",
+     "ENABLE_EXTENSIONS_CORE=$enable_extensions_core",
+     "ENABLE_PLATFORM_APPS=$enable_platform_apps",
+   ]
+ }
+diff --git a/extensions/buildflags/buildflags.gni b/extensions/buildflags/buildflags.gni
+index 5cba68c398156..1251727c26366 100644
+--- a/extensions/buildflags/buildflags.gni
++++ b/extensions/buildflags/buildflags.gni
+@@ -8,28 +8,13 @@ import("//build/config/chrome_build.gni")
+ declare_args() {
+   # `enable_extensions` controls whether the full and stable extensions platform
+   # is compiled.
+   enable_extensions = !is_android && !is_ios && !is_castos && !is_fuchsia
+ 
+-  # `enable_desktop_android_extensions` is an experimental flag used in
+-  # prototypes of desktop-focused android-powered builds. This is very much
+-  # in-development, non-stable, and likely to crash at any given moment.
+-  #
+-  # Introducing a separate flag like this has the unfortunate effect of leading
+-  # to a lot of `if BUILDFLAG(ENABLE_EXTENSIONS)` checks in extensions code
+-  # itself, since those checks are instead the equivalent of
+-  # `if BUILDFLAG(ENABLE_FULL_EXTENSIONS_SYSTEM)`. However, we don't want to
+-  # change the stable, production-utilized `enable_extensions` flag for this
+-  # experimental build.
+-  #
+-  # As the experimental build progresses, there should be fewer of those
+-  # checks littered around the extensions codebase, since more and more of
+-  # the extensions code will be included in the desktop android variant.
+-  #
+-  # TODO(https://crbug.com/356905053): Continue expanding the scope of
+-  # enable_desktop_android_extensions.
+-  enable_desktop_android_extensions = is_desktop_android
++  # Vanadium: Enable extensions on Android using Cromite's approach
++  # This enables the full extension system on Android
++  enable_desktop_android_extensions_vanadium = is_android
+ }
+ 
+ # Note: GN forbids relying on args from the same declare_args() block, so we
+ # need this separate from the block above.
+ declare_args() {
+@@ -40,10 +25,10 @@ declare_args() {
+   # toggled / if-def'd.
+   enable_platform_apps = enable_extensions
+ 
+   # Whether the core extensions system is enabled. This prevents many callsites
+   # from needing blocks for
+-  # `if (enable_extensions || enable_desktop_android_extensions)`, since the
++  # `if (enable_extensions || enable_desktop_android_extensions_vanadium)`, since the
+   # core handling in each of these implementations is similar.
+   enable_extensions_core =
+-      enable_extensions || enable_desktop_android_extensions
++      enable_extensions || enable_desktop_android_extensions_vanadium
+ }
+diff --git a/extensions/common/api/schema.gni b/extensions/common/api/schema.gni
+index 8482703c67b10..5f942e0a5fbf1 100644
+--- a/extensions/common/api/schema.gni
++++ b/extensions/common/api/schema.gni
+@@ -102,11 +102,11 @@ if (enable_extensions) {
+ 
+ # In the experimental desktop-android configuration, we still need to compile
+ # the C++ types for certain APIs, since they are used from outside the
+ # extensions layer. These should be removed as we add support for the full
+ # API by moving these entries to the `extensions_api_schema_files_` above.
+-if (enable_desktop_android_extensions) {
++if (enable_desktop_android_extensions_vanadium) {
+   extensions_types_only_schema_files_ += [
+     "clipboard.idl",
+     "scripts_internal.idl",
+     "system_display.idl",
+     "usb.idl",
+diff --git a/media/audio/BUILD.gn b/media/audio/BUILD.gn
+index 9388ffac4f707..cd975772f466d 100644
+--- a/media/audio/BUILD.gn
++++ b/media/audio/BUILD.gn
+@@ -283,10 +283,12 @@ source_set("audio") {
+         "android/opensles_output.h",
+         "android/opensles_util.cc",
+         "android/opensles_util.h",
+         "android/opensles_wrapper.cc",
+       ]
++      # OpenSLES slCreateEngine was deprecated in Android 30 but still works
++      cflags = [ "-Wno-deprecated-declarations" ]
+     }
+     libs += [ "aaudio" ]
+ 
+     deps += [ "//media/base/android:media_jni_headers" ]
+   }
+diff --git a/net/features.gni b/net/features.gni
+index 58807c2250c45..d78b0560dc2b3 100644
+--- a/net/features.gni
++++ b/net/features.gni
+@@ -29,11 +29,11 @@ declare_args() {
+   # TODO: https://crbug.com/40282397 - Consider dropping once Cronet default enables zstd.
+   disable_zstd_filter = false
+ 
+   # Multicast DNS. Enabled on desktop Android for the chrome.mdns extension API.
+   enable_mdns = is_win || is_linux || is_chromeos || is_fuchsia || is_apple ||
+-                enable_desktop_android_extensions
++                enable_desktop_android_extensions_vanadium
+ 
+   # Reporting not used on iOS.
+   enable_reporting = !is_ios
+ 
+   # Includes the transport security state preload list. This list includes
+diff --git a/skia/BUILD.gn b/skia/BUILD.gn
+index 23635270395e8..ca1352be05901 100644
+--- a/skia/BUILD.gn
++++ b/skia/BUILD.gn
+@@ -459,10 +459,12 @@ component("skia") {
+ 
+   if (is_android) {
+     # Note that this requires expat.
+     # Note that this requires skia_ports_fontmgr_android_parser_sources.
+     sources += skia_ports_fontmgr_android_ndk_sources
++    # Android NDK font manager uses ICU for case folding
++    deps += [ "//third_party/icu:icuuc" ]
+   }
+ 
+   if (is_fuchsia) {
+     public += skia_ports_fontmgr_fuchsia_public
+     sources += skia_ports_fontmgr_fuchsia_sources
+diff --git a/third_party/android_sdk/BUILD.gn b/third_party/android_sdk/BUILD.gn
+index 1da57eb2eedd9..91bb8dd6181d1 100644
+--- a/third_party/android_sdk/BUILD.gn
++++ b/third_party/android_sdk/BUILD.gn
+@@ -83,7 +83,9 @@ if (enable_java_templates) {
+ if (android_ndk_api_level >= 29) {
+   config("libbinder_include") {
+     # Use public SDK to ensure LGPL-licensed code can be built without the
+     # internal SDK.
+     include_dirs = [ "$public_android_sdk_platform_root/optional/libbinder_ndk_cpp/" ]
++    # Binder NDK headers are not compatible with C++ modules
++    cflags = [ "-fno-modules" ]
+   }
+ }
+diff --git a/tools/grit/grit_args.gni b/tools/grit/grit_args.gni
+index 06eb8869ec668..d10f9bcf02b28 100644
+--- a/tools/grit/grit_args.gni
++++ b/tools/grit/grit_args.gni
+@@ -32,11 +32,14 @@ _grit_defines = [
+   "use_ozone=${use_ozone}",
+ 
+   # Mac wants Title Case strings.
+   "use_titlecase=${is_mac}",
+ 
+-  "is_desktop_android=${is_desktop_android}",
++  # Vanadium: Keep is_desktop_android for resource file compatibility (always false)
++  # Use is_desktop_android_vanadium in GN/C++ for extension features
++  "is_desktop_android=false",
++  "is_desktop_android_false=${is_desktop_android_false}",
+ ]
+ 
+ # Must match `enable_hidpi` in ui/base/ui_features.gni.
+ if (!is_android) {
+   _grit_defines += [ "scale_factors=2x" ]
+diff --git a/ui/webui/resources/BUILD.gn b/ui/webui/resources/BUILD.gn
+index f03086a610eb0..8f213c4356af0 100644
+--- a/ui/webui/resources/BUILD.gn
++++ b/ui/webui/resources/BUILD.gn
+@@ -48,11 +48,11 @@ generate_grd("build_grd") {
+     "$target_gen_dir/images/resources.grdp",
+     "$target_gen_dir/js/resources.grdp",
+     "$target_gen_dir/mojo/resources.grdp",
+   ]
+ 
+-  if ((!is_android && !is_ios) || is_desktop_android) {
++  if ((!is_android && !is_ios) || is_desktop_android_vanadium) {
+     public_deps += [
+       "cr_components/cr_shortcut_input:build_grdp",
+       "cr_components/managed_footnote:build_grdp",
+       "//third_party/d3:build_grdp",
+     ]
+diff --git a/ui/webui/resources/cr_components/cr_shortcut_input/BUILD.gn b/ui/webui/resources/cr_components/cr_shortcut_input/BUILD.gn
+index 9b01ca4be2501..1bcdeb996e293 100644
+--- a/ui/webui/resources/cr_components/cr_shortcut_input/BUILD.gn
++++ b/ui/webui/resources/cr_components/cr_shortcut_input/BUILD.gn
+@@ -2,11 +2,11 @@
+ # Use of this source code is governed by a BSD-style license that can be
+ # found in the LICENSE file.
+ 
+ import("//ui/webui/resources/tools/build_webui.gni")
+ 
+-assert((!is_android && !is_ios) || is_desktop_android)
++assert((!is_android && !is_ios) || is_desktop_android_vanadium)
+ 
+ build_webui("build") {
+   grd_prefix = "cr_components_cr_shortcut_input"
+ 
+   css_files = [ "cr_shortcut_input.css" ]
+diff --git a/ui/webui/resources/cr_components/managed_footnote/BUILD.gn b/ui/webui/resources/cr_components/managed_footnote/BUILD.gn
+index 6e7075cdb87d7..f16a43a080038 100644
+--- a/ui/webui/resources/cr_components/managed_footnote/BUILD.gn
++++ b/ui/webui/resources/cr_components/managed_footnote/BUILD.gn
+@@ -2,11 +2,11 @@
+ # Use of this source code is governed by a BSD-style license that can be
+ # found in the LICENSE file.
+ 
+ import("//ui/webui/resources/tools/build_webui.gni")
+ 
+-assert((!is_android && !is_ios) || is_desktop_android)
++assert((!is_android && !is_ios) || is_desktop_android_vanadium)
+ 
+ build_webui("build") {
+   grd_prefix = "cr_components_managed_footnote"
+ 
+   ts_files = [
+diff --git a/ui/webui/resources/cr_elements/BUILD.gn b/ui/webui/resources/cr_elements/BUILD.gn
+index abf322d5cec62..9588b5999b0b6 100644
+--- a/ui/webui/resources/cr_elements/BUILD.gn
++++ b/ui/webui/resources/cr_elements/BUILD.gn
+@@ -34,11 +34,11 @@ build_webui("build") {
+     "cr_ripple/cr_ripple.css",
+     "cr_shared_vars.css",
+     "cr_tabs/cr_tabs.css",
+   ]
+ 
+-  if ((!is_android && !is_ios) || is_desktop_android) {
++  if ((!is_android && !is_ios) || is_desktop_android_vanadium) {
+     web_component_files += [ "cr_a11y_announcer/cr_a11y_announcer.ts" ]
+ 
+     ts_files += [
+       "cr_container_shadow_mixin_lit.ts",
+       "cr_icon/iconset_map.ts",
+diff --git a/ui/webui/resources/css/BUILD.gn b/ui/webui/resources/css/BUILD.gn
+index 4564176e2843b..3447635398f9a 100644
+--- a/ui/webui/resources/css/BUILD.gn
++++ b/ui/webui/resources/css/BUILD.gn
+@@ -33,9 +33,9 @@ preprocess_if_expr("preprocess") {
+ 
+   if (is_linux) {
+     in_files += [ "roboto.css" ]
+   }
+ 
+-  if (include_polymer || is_desktop_android) {
++  if (include_polymer || is_desktop_android_vanadium) {
+     in_files += [ "md_colors.css" ]
+   }
+ }
+diff --git a/vanadium/android_config/proto/BUILD.gn b/vanadium/android_config/proto/BUILD.gn
+index dca5909c10d87..b6386a208572f 100644
+--- a/vanadium/android_config/proto/BUILD.gn
++++ b/vanadium/android_config/proto/BUILD.gn
+@@ -57,12 +57,15 @@ android_library("browser_config_parser_java") {
+     "java/src/app/vanadium/config/VanadiumConfConditionals.java",
+     "java/src/app/vanadium/config/VanadiumConfParser.java",
+   ]
+   deps = [
+     ":config_proto_java",
++    "//third_party/android_deps:protobuf_lite_runtime_java",
+     "//vanadium/android_config:configinfo_java",
+   ]
++  # ConfigInfo is generated at APK creation time, not build time
++  proguard_configs = [ "//vanadium/android_config/proguard.flags" ]
+ 
+   # additional sources for subresource filtering component
+   sources += [
+     "java/src/app/vanadium/config/SubresourceFilterComponentUtils.java",
+   ]

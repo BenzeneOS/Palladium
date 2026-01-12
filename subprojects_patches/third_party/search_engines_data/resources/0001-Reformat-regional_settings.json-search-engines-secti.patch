@@ -1,0 +1,140 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: quh4gko8 <88831734+quh4gko8@users.noreply.github.com>
+Date: Mon, 29 Sep 2025 11:48:26 +0000
+Subject: [PATCH] Reformat regional_settings.json search engines section
+
+Commands used for generating the format changes:
+
+```bash
+    sed -ri "s:\[\":\[\n        \":g" definitions/regional_settings.json
+
+    sed -ri "s:\"\]:\"\n      \]:g" definitions/regional_settings.json
+
+    sed -ri "s:\, \":\,\n        \":g" definitions/regional_settings.json
+
+```bash
+---
+ definitions/regional_settings.json | 62 ++++++++++++++++++++++++++----
+ 1 file changed, 54 insertions(+), 8 deletions(-)
+
+diff --git a/definitions/regional_settings.json b/definitions/regional_settings.json
+index 9bd4f39..7bdc719 100644
+--- a/definitions/regional_settings.json
++++ b/definitions/regional_settings.json
+@@ -194,7 +194,13 @@
+     },
+     "CN": {
+       // China
+-      "search_engines": ["&baidu", "&bing", "&sogou", "&so_360", "&google"]
++      "search_engines": [
++        "&baidu",
++        "&bing",
++        "&sogou",
++        "&so_360",
++        "&google"
++      ]
+     },
+     "CO": {
+       // Colombia
+@@ -405,7 +411,13 @@
+     },
+     "HK": {
+       // Hong Kong
+-      "search_engines": ["&google", "&bing", "&yahoo_hk", "&baidu", "&so_360"]
++      "search_engines": [
++        "&google",
++        "&bing",
++        "&yahoo_hk",
++        "&baidu",
++        "&so_360"
++      ]
+     },
+     "HN": {
+       // Honduras
+@@ -574,7 +586,13 @@
+     },
+     "KR": {
+       // South Korea
+-      "search_engines": ["&google", "&naver", "&bing", "&daum", "&coccoc"]
++      "search_engines": [
++        "&google",
++        "&naver",
++        "&bing",
++        "&daum",
++        "&coccoc"
++      ]
+     },
+     "KW": {
+       // Kuwait
+@@ -588,7 +606,13 @@
+     },
+     "KZ": {
+       // Kazakhstan
+-      "search_engines": ["&google", "&yandex_kz", "&bing", "&mail_ru", "&yahoo"]
++      "search_engines": [
++        "&google",
++        "&yandex_kz",
++        "&bing",
++        "&mail_ru",
++        "&yahoo"
++      ]
+     },
+     "LB": {
+       // Lebanon
+@@ -1061,7 +1085,13 @@
+     },
+     "TW": {
+       // Taiwan
+-      "search_engines": ["&google", "&yahoo_tw", "&bing", "&coccoc", "&baidu"]
++      "search_engines": [
++        "&google",
++        "&yahoo_tw",
++        "&bing",
++        "&coccoc",
++        "&baidu"
++      ]
+     },
+     "TZ": {
+       // Tanzania
+@@ -1115,7 +1145,13 @@
+     },
+     "VN": {
+       // Vietnam
+-      "search_engines": ["&google", "&coccoc", "&yahoo", "&bing", "&duckduckgo"]
++      "search_engines": [
++        "&google",
++        "&coccoc",
++        "&yahoo",
++        "&bing",
++        "&duckduckgo"
++      ]
+     },
+     "YE": {
+       // Yemen
+@@ -1139,14 +1175,24 @@
+     },
+     "ZW": {
+       // Zimbabwe
+-      "search_engines": ["&google", "&bing", "&yahoo", "&duckduckgo", "&sogou"]
++      "search_engines": [
++        "&google",
++        "&bing",
++        "&yahoo",
++        "&duckduckgo",
++        "&sogou"
++      ]
+     },
+     // Fallback / default country. Occupies a user-assignable alpha-2 code,
+     // representing unknown or invalid territory.
+     // See https://en.wikipedia.org/wiki/ISO_3166-1_alpha-2#ZZ
+     "ZZ": {
+       // Default
+-      "search_engines": ["&google", "&bing", "&yahoo"]
++      "search_engines": [
++        "&google",
++        "&bing",
++        "&yahoo"
++      ]
+     }
+   },
+   "aggregation": {

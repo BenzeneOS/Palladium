@@ -1,0 +1,355 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Amaan Qureshi <git@amaanq.com>
+Date: Sat, 11 Jan 2026 00:00:00 +0000
+Subject: [PATCH] add custom search engine feature
+
+Allow users to manually add custom search engines instead of
+waiting for Chrome to auto-detect them via OpenSearch. Users
+can specify:
+- Name: Display name for the search engine
+- Keyword: Shortcut to use in address bar  
+- Search URL: URL with %s placeholder for query
+
+This provides a much better UX than the default Chrome behavior
+which requires visiting a site multiple times before the search
+engine becomes available.
+---
+
+diff --git a/chrome/browser/search_engines/android/BUILD.gn b/chrome/browser/search_engines/android/BUILD.gn
+index 2bdd53d60231c..6abcf77b18b30 100644
+--- a/chrome/browser/search_engines/android/BUILD.gn
++++ b/chrome/browser/search_engines/android/BUILD.gn
+@@ -17,10 +17,11 @@ android_library("java") {
+     "java/src/org/chromium/chrome/browser/search_engines/SearchEnginePromoType.java",
+     "java/src/org/chromium/chrome/browser/search_engines/SogouPromoDialog.java",
+     "java/src/org/chromium/chrome/browser/search_engines/TemplateUrlServiceFactory.java",
+     "java/src/org/chromium/chrome/browser/search_engines/choice_screen/ChoiceDialogCoordinator.java",
+     "java/src/org/chromium/chrome/browser/search_engines/choice_screen/ChoiceDialogMediator.java",
++    "java/src/org/chromium/chrome/browser/search_engines/settings/AddCustomSearchEngineDialog.java",
+     "java/src/org/chromium/chrome/browser/search_engines/settings/SearchEngineAdapter.java",
+     "java/src/org/chromium/chrome/browser/search_engines/settings/SearchEngineSettings.java",
+   ]
+ 
+   srcjar_deps = [ ":jni_headers" ]
+@@ -76,17 +77,20 @@ android_resources("java_resources") {
+     "java/res/drawable-night/blocking_choice_confirmation_illustration.xml",
+     "java/res/drawable-night/blocking_choice_dialog_illustration.xml",
+     "java/res/drawable/blocking_choice_confirmation_illustration.xml",
+     "java/res/drawable/blocking_choice_dialog_illustration.xml",
+     "java/res/drawable/search_sogou.xml",
++    "java/res/layout/add_custom_search_engine_dialog.xml",
++    "java/res/layout/add_custom_search_engine_footer.xml",
+     "java/res/layout/blocking_choice_dialog.xml",
+     "java/res/layout/default_search_engine_dialog_view.xml",
+     "java/res/layout/search_engine_choice_header.xml",
+     "java/res/layout/search_engine_recent_title.xml",
+     "java/res/layout/search_engine_with_logo.xml",
+     "java/res/values/dimens.xml",
+     "java/res/values/ids.xml",
++    "java/res/values/strings.xml",
+   ]
+   deps = [
+     "//chrome/browser/ui/android/strings:ui_strings_grd",
+     "//components/browser_ui/styles/android:java_resources",
+     "//components/browser_ui/widget/android:java_resources",
+diff --git a/chrome/browser/search_engines/android/java/src/org/chromium/chrome/browser/search_engines/settings/SearchEngineSettings.java b/chrome/browser/search_engines/android/java/src/org/chromium/chrome/browser/search_engines/settings/SearchEngineSettings.java
+index ca38e07bafb25..101eddc29347c 100644
+--- a/chrome/browser/search_engines/android/java/src/org/chromium/chrome/browser/search_engines/settings/SearchEngineSettings.java
++++ b/chrome/browser/search_engines/android/java/src/org/chromium/chrome/browser/search_engines/settings/SearchEngineSettings.java
+@@ -5,10 +5,11 @@
+ package org.chromium.chrome.browser.search_engines.settings;
+ 
+ 
+ import android.os.Bundle;
+ import android.view.View;
++import android.widget.Button;
+ import android.widget.ListView;
+ 
+ import androidx.fragment.app.ListFragment;
+ 
+ import org.chromium.base.supplier.ObservableSupplier;
+@@ -76,10 +77,31 @@ public class SearchEngineSettings extends ListFragment
+             View headerView =
+                     getLayoutInflater()
+                             .inflate(R.layout.search_engine_choice_header, listView, false);
+             listView.addHeaderView(headerView);
+         }
++
++        // Add footer with "Add custom search engine" button
++        View footerView =
++                getLayoutInflater()
++                        .inflate(R.layout.add_custom_search_engine_footer, listView, false);
++        Button addCustomButton = footerView.findViewById(R.id.add_custom_search_engine_button);
++        addCustomButton.setOnClickListener(v -> showAddCustomSearchEngineDialog());
++        listView.addFooterView(footerView);
++    }
++
++    private void showAddCustomSearchEngineDialog() {
++        AddCustomSearchEngineDialog dialog = new AddCustomSearchEngineDialog();
++        dialog.setOnSuccessCallback(() -> {
++            // Restart the adapter to refresh the list
++            // The TemplateUrlService observer will also trigger a refresh
++            if (mSearchEngineAdapter != null) {
++                mSearchEngineAdapter.stop();
++                mSearchEngineAdapter.start();
++            }
++        });
++        dialog.show(getParentFragmentManager(), "AddCustomSearchEngine");
+     }
+ 
+     @Override
+     public void onStart() {
+         super.onStart();
+
+diff --git a/chrome/browser/search_engines/android/java/res/layout/add_custom_search_engine_dialog.xml b/chrome/browser/search_engines/android/java/res/layout/add_custom_search_engine_dialog.xml
+new file mode 100644
+--- /dev/null
++++ b/chrome/browser/search_engines/android/java/res/layout/add_custom_search_engine_dialog.xml
+@@ -0,0 +1,58 @@
++<?xml version="1.0" encoding="utf-8"?>
++<!-- Copyright 2026 The Chromium Authors
++     Use of this source code is governed by a BSD-style license that can be
++     found in the LICENSE file. -->
++
++<LinearLayout
++    xmlns:android="http://schemas.android.com/apk/res/android"
++    android:layout_width="match_parent"
++    android:layout_height="wrap_content"
++    android:orientation="vertical"
++    android:padding="16dp">
++
++    <com.google.android.material.textfield.TextInputLayout
++        android:layout_width="match_parent"
++        android:layout_height="wrap_content"
++        android:hint="@string/custom_search_engine_name_hint">
++        <com.google.android.material.textfield.TextInputEditText
++            android:id="@+id/search_engine_name"
++            android:layout_width="match_parent"
++            android:layout_height="wrap_content"
++            android:inputType="text"
++            android:maxLines="1" />
++    </com.google.android.material.textfield.TextInputLayout>
++
++    <com.google.android.material.textfield.TextInputLayout
++        android:layout_width="match_parent"
++        android:layout_height="wrap_content"
++        android:layout_marginTop="8dp"
++        android:hint="@string/custom_search_engine_keyword_hint">
++        <com.google.android.material.textfield.TextInputEditText
++            android:id="@+id/search_engine_keyword"
++            android:layout_width="match_parent"
++            android:layout_height="wrap_content"
++            android:inputType="text"
++            android:maxLines="1" />
++    </com.google.android.material.textfield.TextInputLayout>
++
++    <com.google.android.material.textfield.TextInputLayout
++        android:layout_width="match_parent"
++        android:layout_height="wrap_content"
++        android:layout_marginTop="8dp"
++        android:hint="@string/custom_search_engine_url_hint">
++        <com.google.android.material.textfield.TextInputEditText
++            android:id="@+id/search_engine_url"
++            android:layout_width="match_parent"
++            android:layout_height="wrap_content"
++            android:inputType="textUri"
++            android:maxLines="1" />
++    </com.google.android.material.textfield.TextInputLayout>
++
++    <TextView
++        android:layout_width="match_parent"
++        android:layout_height="wrap_content"
++        android:layout_marginTop="8dp"
++        android:text="@string/custom_search_engine_url_help"
++        android:textAppearance="@style/TextAppearance.TextSmall.Secondary" />
++
++</LinearLayout>
+diff --git a/chrome/browser/search_engines/android/java/res/layout/add_custom_search_engine_footer.xml b/chrome/browser/search_engines/android/java/res/layout/add_custom_search_engine_footer.xml
+new file mode 100644
+--- /dev/null
++++ b/chrome/browser/search_engines/android/java/res/layout/add_custom_search_engine_footer.xml
+@@ -0,0 +1,20 @@
++<?xml version="1.0" encoding="utf-8"?>
++<!-- Copyright 2026 The Chromium Authors
++     Use of this source code is governed by a BSD-style license that can be
++     found in the LICENSE file. -->
++
++<LinearLayout
++    xmlns:android="http://schemas.android.com/apk/res/android"
++    android:layout_width="match_parent"
++    android:layout_height="wrap_content"
++    android:orientation="vertical"
++    android:padding="16dp">
++
++    <Button
++        android:id="@+id/add_custom_search_engine_button"
++        android:layout_width="match_parent"
++        android:layout_height="wrap_content"
++        android:text="@string/add_custom_search_engine_button"
++        style="@style/Widget.MaterialComponents.Button.OutlinedButton" />
++
++</LinearLayout>
+diff --git a/chrome/browser/search_engines/android/java/res/values/strings.xml b/chrome/browser/search_engines/android/java/res/values/strings.xml
+new file mode 100644
+--- /dev/null
++++ b/chrome/browser/search_engines/android/java/res/values/strings.xml
+@@ -0,0 +1,13 @@
++<?xml version="1.0" encoding="utf-8"?>
++<!-- Copyright 2026 The Chromium Authors
++     Use of this source code is governed by a BSD-style license that can be
++     found in the LICENSE file. -->
++
++<resources>
++    <string name="add_custom_search_engine_title">Add custom search engine</string>
++    <string name="add_custom_search_engine_button">Add custom</string>
++    <string name="custom_search_engine_name_hint">Name (e.g., My Search)</string>
++    <string name="custom_search_engine_keyword_hint">Keyword (e.g., mysearch)</string>
++    <string name="custom_search_engine_url_hint">Search URL</string>
++    <string name="custom_search_engine_url_help" formatted="false">Use %s or {searchTerms} where the query goes.\nExample: https://example.com/search?q=%s</string>
++</resources>
+diff --git a/chrome/browser/search_engines/android/java/src/org/chromium/chrome/browser/search_engines/settings/AddCustomSearchEngineDialog.java b/chrome/browser/search_engines/android/java/src/org/chromium/chrome/browser/search_engines/settings/AddCustomSearchEngineDialog.java
+new file mode 100644
+--- /dev/null
++++ b/chrome/browser/search_engines/android/java/src/org/chromium/chrome/browser/search_engines/settings/AddCustomSearchEngineDialog.java
+@@ -0,0 +1,141 @@
++// Copyright 2026 The Chromium Authors
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++package org.chromium.chrome.browser.search_engines.settings;
++
++import android.app.Dialog;
++import android.content.Context;
++import android.os.Bundle;
++import android.text.Editable;
++import android.text.TextWatcher;
++import android.view.LayoutInflater;
++import android.view.View;
++import android.widget.EditText;
++
++import androidx.appcompat.app.AlertDialog;
++import androidx.fragment.app.DialogFragment;
++
++import org.chromium.build.annotations.NullMarked;
++import org.chromium.build.annotations.Nullable;
++import org.chromium.chrome.browser.profiles.ProfileManager;
++import org.chromium.chrome.browser.search_engines.R;
++import org.chromium.chrome.browser.search_engines.TemplateUrlServiceFactory;
++import org.chromium.components.search_engines.TemplateUrlService;
++
++/**
++ * Dialog for adding a custom search engine.
++ * Users can specify name, keyword, and search URL with %s placeholder.
++ */
++@NullMarked
++public class AddCustomSearchEngineDialog extends DialogFragment {
++    private EditText mNameInput;
++    private EditText mKeywordInput;
++    private EditText mSearchUrlInput;
++    private AlertDialog mDialog;
++    private @Nullable Runnable mOnSuccessCallback;
++
++    public void setOnSuccessCallback(Runnable callback) {
++        mOnSuccessCallback = callback;
++    }
++
++    @Override
++    public Dialog onCreateDialog(@Nullable Bundle savedInstanceState) {
++        Context context = requireContext();
++        LayoutInflater inflater = LayoutInflater.from(context);
++        View view = inflater.inflate(R.layout.add_custom_search_engine_dialog, null);
++
++        mNameInput = view.findViewById(R.id.search_engine_name);
++        mKeywordInput = view.findViewById(R.id.search_engine_keyword);
++        mSearchUrlInput = view.findViewById(R.id.search_engine_url);
++
++        // Add text watchers to enable/disable the Add button based on input validity
++        TextWatcher textWatcher = new TextWatcher() {
++            @Override
++            public void beforeTextChanged(CharSequence s, int start, int count, int after) {}
++
++            @Override
++            public void onTextChanged(CharSequence s, int start, int before, int count) {}
++
++            @Override
++            public void afterTextChanged(Editable s) {
++                updateAddButtonState();
++            }
++        };
++
++        mNameInput.addTextChangedListener(textWatcher);
++        mKeywordInput.addTextChangedListener(textWatcher);
++        mSearchUrlInput.addTextChangedListener(textWatcher);
++
++        mDialog = new AlertDialog.Builder(context)
++                .setTitle(R.string.add_custom_search_engine_title)
++                .setView(view)
++                .setPositiveButton(android.R.string.ok, (dialog, which) -> addSearchEngine())
++                .setNegativeButton(android.R.string.cancel, null)
++                .create();
++
++        mDialog.setOnShowListener(dialogInterface -> updateAddButtonState());
++
++        return mDialog;
++    }
++
++    private void updateAddButtonState() {
++        if (mDialog == null) return;
++
++        boolean isValid = isInputValid();
++        mDialog.getButton(AlertDialog.BUTTON_POSITIVE).setEnabled(isValid);
++    }
++
++    private boolean isInputValid() {
++        String name = mNameInput.getText().toString().trim();
++        String keyword = mKeywordInput.getText().toString().trim();
++        String searchUrl = mSearchUrlInput.getText().toString().trim();
++
++        if (name.isEmpty() || keyword.isEmpty() || searchUrl.isEmpty()) {
++            return false;
++        }
++
++        // URL must contain %s or {searchTerms} placeholder
++        if (!searchUrl.contains("%s") && !searchUrl.contains("{searchTerms}")) {
++            return false;
++        }
++
++        // Basic URL validation
++        if (!searchUrl.startsWith("http://") && !searchUrl.startsWith("https://")) {
++            return false;
++        }
++
++        return true;
++    }
++
++    private void addSearchEngine() {
++        String name = mNameInput.getText().toString().trim();
++        String keyword = mKeywordInput.getText().toString().trim();
++        String searchUrl = mSearchUrlInput.getText().toString().trim();
++
++        // Convert %s to {searchTerms} format if needed
++        if (searchUrl.contains("%s")) {
++            searchUrl = searchUrl.replace("%s", "{searchTerms}");
++        }
++
++        TemplateUrlService templateUrlService = TemplateUrlServiceFactory.getForProfile(
++                ProfileManager.getLastUsedRegularProfile());
++
++        boolean success = templateUrlService.setPlayAPISearchEngine(
++                name,
++                keyword,
++                searchUrl,
++                null,  // suggestUrl
++                null,  // faviconUrl
++                null,  // newTabUrl
++                null,  // imageUrl
++                null,  // imageUrlPostParams
++                null,  // imageTranslateUrl
++                null,  // imageTranslateSourceLanguageParamKey
++                null); // imageTranslateTargetLanguageParamKey
++
++        if (success && mOnSuccessCallback != null) {
++            mOnSuccessCallback.run();
++        }
++    }
++}

@@ -1,0 +1,7 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Amaan Qureshi <git@amaanq.com>
+Subject: [PATCH] fix: missing build deps for vanadium config
+
+NOTE: Changes merged into patches 0145 and 0233.
+---
+

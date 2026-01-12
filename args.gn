@@ -40,7 +40,11 @@ enable_cardboard = false
 enable_remoting = false
 enable_reporting = false
 
-trichrome_certdigest = "c6adb8b83c6d4c17d292afde56fd488a51d316ff8f2c11c5410223bff8a7dbb3"
+# Match trichrome minSdkVersion to avoid bundletool conflicts
+default_min_sdk_version = 33
+
+# Debug key fingerprint for testing
+trichrome_certdigest = "21e92989777400a86c67726b439329239b81903c8bd413d43c0c5f665f1b8b08"
 
 chrome_public_manifest_package = "app.vanadium.browser"
 system_webview_package_name = "app.vanadium.webview"
@@ -52,8 +56,8 @@ config_apk_version_name = "144"
 config_apk_version_code = "144"
 config_apk_is_debug = false
 
-# Only enable secondary arch support for arm64, reducing build time and apk size elsewhere
-enable_android_secondary_abi = target_cpu == "arm64"
+# Disable secondary arch - 32-bit has build issues with C++ modules and deprecated APIs
+enable_android_secondary_abi = false
 
 # Explicitly disable static analysis as intended for official builds.
 # See //build/config/android/config.gni line 90-92 as of M136

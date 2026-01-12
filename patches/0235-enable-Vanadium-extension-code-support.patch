@@ -1,0 +1,2254 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Amaan Qureshi <git@amaanq.com>
+Date: Sat, 11 Jan 2026 00:00:00 +0000
+Subject: [PATCH] enable Vanadium extension code support
+
+Code changes to enable Chrome extensions on Android. Updates C++ and
+Java code to use IS_DESKTOP_ANDROID_VANADIUM and related flags.
+---
+
+diff --git a/chrome/browser/android/selection/chrome_selection_dropdown_menu_delegate.cc b/chrome/browser/android/selection/chrome_selection_dropdown_menu_delegate.cc
+index 0b57028f530e3..eb5fa86ef130c 100644
+--- a/chrome/browser/android/selection/chrome_selection_dropdown_menu_delegate.cc
++++ b/chrome/browser/android/selection/chrome_selection_dropdown_menu_delegate.cc
+@@ -6,13 +6,13 @@
+ 
+ #include "content/public/browser/context_menu_params.h"
+ #include "content/public/browser/render_frame_host.h"
+ #include "extensions/buildflags/buildflags.h"
+ 
+-#if BUILDFLAG(ENABLE_DESKTOP_ANDROID_EXTENSIONS)
++#if BUILDFLAG(ENABLE_DESKTOP_ANDROID_EXTENSIONS_VANADIUM)
+ #include "chrome/browser/extensions/extension_menu_model_android.h"
+-#endif  // BUILDFLAG(ENABLE_DESKTOP_ANDROID_EXTENSIONS)
++#endif  // BUILDFLAG(ENABLE_DESKTOP_ANDROID_EXTENSIONS_VANADIUM)
+ 
+ namespace android {
+ 
+ ChromeSelectionDropdownMenuDelegate::ChromeSelectionDropdownMenuDelegate() =
+     default;
+@@ -23,16 +23,16 @@ ChromeSelectionDropdownMenuDelegate::~ChromeSelectionDropdownMenuDelegate() =
+ // SelectionPopupDelegate implementation.
+ std::unique_ptr<ui::MenuModel>
+ ChromeSelectionDropdownMenuDelegate::GetSelectionPopupExtraItems(
+     content::RenderFrameHost& render_frame_host,
+     const content::ContextMenuParams& params) {
+-#if BUILDFLAG(ENABLE_DESKTOP_ANDROID_EXTENSIONS)
++#if BUILDFLAG(ENABLE_DESKTOP_ANDROID_EXTENSIONS_VANADIUM)
+   std::unique_ptr<extensions::ExtensionMenuModel> extension_menu_model =
+       std::make_unique<extensions::ExtensionMenuModel>(render_frame_host,
+                                                        params);
+   extension_menu_model->PopulateModel();
+   return std::move(extension_menu_model);
+ #else
+   return nullptr;
+-#endif  // BUILDFLAG(ENABLE_DESKTOP_ANDROID_EXTENSIONS)
++#endif  // BUILDFLAG(ENABLE_DESKTOP_ANDROID_EXTENSIONS_VANADIUM)
+ }
+ }  // namespace android
+diff --git a/chrome/browser/browser_process_impl.cc b/chrome/browser/browser_process_impl.cc
+index 3c9be757d668f..30febb94efa08 100644
+--- a/chrome/browser/browser_process_impl.cc
++++ b/chrome/browser/browser_process_impl.cc
+@@ -355,17 +355,17 @@ void BrowserProcessImpl::Init() {
+   // ownership is transferred here, as this object lives long into shutdown, and
+   // ExtensionsBrowserClient must also live during most of shutdown.
+   // TODO(devlin): Move this block out of BrowserProcessImpl to somewhere like
+   // //chrome/browser/initialize_extensions_browser_client, analogous to
+   // `EnsureExtensionsClientInitialized()` above?
+-#if BUILDFLAG(ENABLE_DESKTOP_ANDROID_EXTENSIONS)
++#if BUILDFLAG(ENABLE_DESKTOP_ANDROID_EXTENSIONS_VANADIUM)
+   extensions_browser_client_ = startup_data()->TakeExtensionsBrowserClient();
+ #elif BUILDFLAG(ENABLE_EXTENSIONS)
+   extensions_browser_client_ =
+       std::make_unique<extensions::ChromeExtensionsBrowserClient>();
+ #else
+-  // Neither ENABLE_EXTENSIONS nor ENABLE_DESKTOP_ANDROID_EXTENSIONS are
++  // Neither ENABLE_EXTENSIONS nor ENABLE_DESKTOP_ANDROID_EXTENSIONS_VANADIUM are
+   // enabled. Unknown configuration.
+ #error "Unknown configuration."
+ #endif
+ 
+   extensions_browser_client_->Init();
+diff --git a/chrome/browser/chrome_browser_field_trials.cc b/chrome/browser/chrome_browser_field_trials.cc
+index 34e7fdeb35ed8..2f64cd5346c16 100644
+--- a/chrome/browser/chrome_browser_field_trials.cc
++++ b/chrome/browser/chrome_browser_field_trials.cc
+@@ -122,11 +122,11 @@ void ChromeBrowserFieldTrials::RegisterFeatureOverrides(
+ 
+   if (xdg_session_type == "wayland") {
+     feature_overrides.DisableFeature(features::kEyeDropper);
+   }
+ #elif BUILDFLAG(IS_ANDROID)  // BUILDFLAG(IS_LINUX)
+-#if BUILDFLAG(IS_DESKTOP_ANDROID)
++#if BUILDFLAG(IS_DESKTOP_ANDROID_VANADIUM)
+   // Nota bene: Anything here is expected to be short-lived, unless deemed too
+   // risky to launch to non-desktop platforms. New features being added here
+   // should be the exception, and not the norm. Instead, you should place the
+   // override in the generic IS_ANDROID block below, guarded by an appropriate
+   // runtime check.
+@@ -274,10 +274,10 @@ void ChromeBrowserFieldTrials::RegisterFeatureOverrides(
+ 
+   // Enables the ability to specify a platform-specific zoom scaling that will
+   // apply transparently to all pages.
+   // TODO(crbug.com/450281745): Remove once feature is enabled by default.
+   feature_overrides.EnableFeature(::features::kAndroidDesktopZoomScaling);
+-#endif  // BUILDFLAG(IS_DESKTOP_ANDROID)
++#endif  // BUILDFLAG(IS_DESKTOP_ANDROID_VANADIUM)
+   // Desktop-first features which are past incubation should either end up here,
+   // or to a finch trial that enables it for all form factors.
+ #endif  // BUILDFLAG(IS_ANDROID)
+ }
+diff --git a/chrome/browser/chrome_browser_interface_binders_webui.cc b/chrome/browser/chrome_browser_interface_binders_webui.cc
+index 2d71dfc2cef20..c61ab7d9c7b4a 100644
+--- a/chrome/browser/chrome_browser_interface_binders_webui.cc
++++ b/chrome/browser/chrome_browser_interface_binders_webui.cc
+@@ -39,11 +39,11 @@
+ #include "content/public/browser/web_ui_browser_interface_broker_registry.h"
+ #include "content/public/browser/web_ui_controller_interface_binder.h"
+ #include "mojo/public/cpp/bindings/binder_map.h"
+ 
+ #if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX) || \
+-    BUILDFLAG(IS_CHROMEOS) || BUILDFLAG(IS_DESKTOP_ANDROID)
++    BUILDFLAG(IS_CHROMEOS) || BUILDFLAG(IS_DESKTOP_ANDROID_VANADIUM)
+ #include "chrome/browser/ui/webui/discards/discards.mojom.h"
+ #include "chrome/browser/ui/webui/discards/discards_ui.h"
+ #include "chrome/browser/ui/webui/discards/site_data.mojom.h"
+ #endif
+ 
+@@ -137,11 +137,11 @@ void PopulateChromeWebUIFrameBinders(
+ #if BUILDFLAG(IS_CHROMEOS)
+   PopulateChromeWebUIFrameBindersPartsCros(map, render_frame_host);
+ #endif  // BUILDFLAG(IS_CHROMEOS)
+ 
+ #if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX) || \
+-    BUILDFLAG(IS_CHROMEOS) || BUILDFLAG(IS_DESKTOP_ANDROID)
++    BUILDFLAG(IS_CHROMEOS) || BUILDFLAG(IS_DESKTOP_ANDROID_VANADIUM)
+   RegisterWebUIControllerInterfaceBinder<discards::mojom::DetailsProvider,
+                                          DiscardsUI>(map);
+ 
+   RegisterWebUIControllerInterfaceBinder<discards::mojom::GraphDump,
+                                          DiscardsUI>(map);
+diff --git a/chrome/browser/chrome_content_browser_client.cc b/chrome/browser/chrome_content_browser_client.cc
+index 89ac33a401afb..c126f75ad4af9 100644
+--- a/chrome/browser/chrome_content_browser_client.cc
++++ b/chrome/browser/chrome_content_browser_client.cc
+@@ -4241,11 +4241,11 @@ base::OnceClosure ChromeContentBrowserClient::SelectClientCertificate(
+     // proceed without a certificate. This is done as a temporary workaround to
+     // enable testing.
+     // TODO(wenz): This should instead proceed with the selected certificate
+     // when there are matching certificates in the OS.
+ #if BUILDFLAG(ENABLE_EXTENSIONS) && \
+-    !(BUILDFLAG(IS_ANDROID) && !BUILDFLAG(IS_DESKTOP_ANDROID))
++    !(BUILDFLAG(IS_ANDROID) && !BUILDFLAG(IS_DESKTOP_ANDROID_VANADIUM))
+     if (matching_certificates.empty() && nonmatching_certificates.empty()) {
+       extensions::ProcessMap* process_map =
+           extensions::ProcessMap::Get(profile);
+       if (process_map && process_map->Contains(process_id)) {
+         delegate->ContinueWithCertificate(nullptr, nullptr);
+@@ -4470,11 +4470,11 @@ void ChromeContentBrowserClient::OverrideWebPreferences(
+   PrefService* prefs = profile->GetPrefs();
+ 
+ // Fill font preferences. These are not registered on Android unless we're built
+ // with extensions (the chrome.fontSettings API can change these).
+ // - http://crbug.com/308033, http://crbug.com/696364.
+-#if !BUILDFLAG(IS_ANDROID) || BUILDFLAG(ENABLE_DESKTOP_ANDROID_EXTENSIONS)
++#if !BUILDFLAG(IS_ANDROID) || BUILDFLAG(ENABLE_DESKTOP_ANDROID_EXTENSIONS_VANADIUM)
+   // Enabling the FontFamilyCache needs some KeyedService that might not be
+   // available for some irregular profiles, like the System Profile.
+   if (!AreKeyedServicesDisabledForProfileByDefault(profile)) {
+     FontFamilyCache::FillFontFamilyMap(profile,
+                                        prefs::kWebKitStandardFontFamilyMap,
+diff --git a/chrome/browser/download/download_offline_content_provider.cc b/chrome/browser/download/download_offline_content_provider.cc
+index 278f0fdd3d2db..d08a0570ac12f 100644
+--- a/chrome/browser/download/download_offline_content_provider.cc
++++ b/chrome/browser/download/download_offline_content_provider.cc
+@@ -44,11 +44,11 @@
+ #include "content/public/browser/download_item_utils.h"
+ #include "content/public/browser/download_manager_delegate.h"
+ #include "content/public/common/content_features.h"
+ #include "ui/base/device_form_factor.h"
+ 
+-#if BUILDFLAG(ENABLE_DESKTOP_ANDROID_EXTENSIONS)
++#if BUILDFLAG(ENABLE_DESKTOP_ANDROID_EXTENSIONS_VANADIUM)
+ #include "chrome/browser/download/download_core_service.h"
+ #include "chrome/browser/download/download_core_service_factory.h"
+ #endif
+ 
+ #if BUILDFLAG(SAFE_BROWSING_DOWNLOAD_PROTECTION)
+@@ -488,11 +488,11 @@ void DownloadOfflineContentProvider::OnDownloadUpdated(DownloadItem* item) {
+ 
+   if (!should_notify && !ShouldShowDownloadItem(item)) {
+     return;
+   }
+ 
+-#if BUILDFLAG(ENABLE_DESKTOP_ANDROID_EXTENSIONS)
++#if BUILDFLAG(ENABLE_DESKTOP_ANDROID_EXTENSIONS_VANADIUM)
+   // On desktop Android, the extensions chrome.download.setUiOptions() function
+   // can disable UI updates.
+   // TODO(crbug.com/459823225): Expand the IsDangerous() check to other
+   // situations where UI should be forced on.
+   const bool always_show_ui = item->IsDangerous();
+diff --git a/chrome/browser/download/download_offline_content_provider_unittest.cc b/chrome/browser/download/download_offline_content_provider_unittest.cc
+index 6c4df0e6e2051..4a210b630e838 100644
+--- a/chrome/browser/download/download_offline_content_provider_unittest.cc
++++ b/chrome/browser/download/download_offline_content_provider_unittest.cc
+@@ -30,11 +30,11 @@
+ #include "chrome/browser/safe_browsing/test_safe_browsing_service.h"
+ #include "chrome/test/base/testing_browser_process.h"
+ #include "components/safe_browsing/core/common/proto/csd.pb.h"
+ #endif
+ 
+-#if BUILDFLAG(ENABLE_DESKTOP_ANDROID_EXTENSIONS)
++#if BUILDFLAG(ENABLE_DESKTOP_ANDROID_EXTENSIONS_VANADIUM)
+ #include "chrome/browser/download/download_core_service.h"
+ #include "chrome/browser/download/download_core_service_factory.h"
+ #endif
+ 
+ using ::testing::_;
+@@ -330,11 +330,11 @@ TEST_F(DownloadOfflineContentProviderWithSafeBrowsingTest,
+   EXPECT_EQ(item->GetURL().spec(), sent_report.url());
+   EXPECT_TRUE(sent_report.did_proceed());
+ }
+ #endif  // BUILDFLAG(SAFE_BROWSING_DOWNLOAD_PROTECTION) && BUILDFLAG(IS_ANDROID)
+ 
+-#if BUILDFLAG(ENABLE_DESKTOP_ANDROID_EXTENSIONS)
++#if BUILDFLAG(ENABLE_DESKTOP_ANDROID_EXTENSIONS_VANADIUM)
+ // Tests that when the UI is hidden by an extension updates do not show.
+ TEST_F(DownloadOfflineContentProviderTest, DoNotShowHiddenByExtension) {
+   DownloadCoreService* service =
+       DownloadCoreServiceFactory::GetForBrowserContext(&profile_);
+   service->SetDownloadUiEnabledForTest(false);
+diff --git a/chrome/browser/extensions/api/chrome_extensions_api_client_android.cc b/chrome/browser/extensions/api/chrome_extensions_api_client_android.cc
+index c9f24d05bcef5..15c71c649fbd2 100644
+--- a/chrome/browser/extensions/api/chrome_extensions_api_client_android.cc
++++ b/chrome/browser/extensions/api/chrome_extensions_api_client_android.cc
+@@ -13,11 +13,11 @@
+ // ChromeExtensionsAPIClient that are not yet supported on desktop Android. Once
+ // these functions are supported on desktop Android this file can be deleted.
+ // The stubs are implemented here instead of falling back to ExtensionsAPIClient
+ // to allow NOTIMPLEMENTED() logging and a place to put TODOs with bug IDs.
+ 
+-static_assert(BUILDFLAG(ENABLE_DESKTOP_ANDROID_EXTENSIONS));
++static_assert(BUILDFLAG(ENABLE_DESKTOP_ANDROID_EXTENSIONS_VANADIUM));
+ 
+ namespace extensions {
+ 
+ std::unique_ptr<DevicePermissionsPrompt>
+ ChromeExtensionsAPIClient::CreateDevicePermissionsPrompt(
+diff --git a/chrome/browser/extensions/api/tabs/tabs_apitest_android.cc b/chrome/browser/extensions/api/tabs/tabs_apitest_android.cc
+index 446ddd36a5678..25b1bfbe4a7af 100644
+--- a/chrome/browser/extensions/api/tabs/tabs_apitest_android.cc
++++ b/chrome/browser/extensions/api/tabs/tabs_apitest_android.cc
+@@ -7,11 +7,11 @@
+ #include "extensions/buildflags/buildflags.h"
+ 
+ // TODO(crbug.com/371432155): Remove this file when chrome.tabs API is
+ // available on desktop Android. These tests only exist to help maintain the
+ // stub tabs API.
+-static_assert(BUILDFLAG(ENABLE_DESKTOP_ANDROID_EXTENSIONS));
++static_assert(BUILDFLAG(ENABLE_DESKTOP_ANDROID_EXTENSIONS_VANADIUM));
+ 
+ namespace extensions {
+ 
+ using TabsApiTest = ExtensionApiTest;
+ 
+diff --git a/chrome/browser/extensions/chrome_component_extension_resource_manager.cc b/chrome/browser/extensions/chrome_component_extension_resource_manager.cc
+index 54e593c37035f..57cb1000a1263 100644
+--- a/chrome/browser/extensions/chrome_component_extension_resource_manager.cc
++++ b/chrome/browser/extensions/chrome_component_extension_resource_manager.cc
+@@ -76,10 +76,14 @@ class ChromeComponentExtensionResourceManager::Data {
+   // A map from an extension ID to its i18n template replacements.
+   TemplateReplacementMap template_replacements_;
+ };
+ 
+ ChromeComponentExtensionResourceManager::Data::Data() {
++  AddComponentResourceEntries(kComponentExtensionResources);
++
++#if !BUILDFLAG(IS_ANDROID)
++  // Webstore icons are not available on Android
+   static const webui::ResourcePath kExtraComponentExtensionResources[] = {
+ #if BUILDFLAG(IS_CHROMEOS)
+     {"web_store/webstore_icon_128.png", IDR_WEBSTORE_APP_ICON_128},
+     {"web_store/webstore_icon_16.png", IDR_WEBSTORE_APP_ICON_16},
+ #else
+@@ -90,13 +94,12 @@ ChromeComponentExtensionResourceManager::Data::Data() {
+ #if BUILDFLAG(IS_CHROMEOS)
+     {"chrome_app/chrome_app_icon_32.png", IDR_CHROME_APP_ICON_32},
+     {"chrome_app/chrome_app_icon_192.png", IDR_CHROME_APP_ICON_192},
+ #endif  // BUILDFLAG(IS_CHROMEOS)
+   };
+-
+-  AddComponentResourceEntries(kComponentExtensionResources);
+   AddComponentResourceEntries(kExtraComponentExtensionResources);
++#endif  // !BUILDFLAG(IS_ANDROID)
+ 
+ #if BUILDFLAG(IS_CHROMEOS)
+   // Add Files app JS modules resources.
+   AddComponentResourceEntries(kFileManagerResources);
+   AddComponentResourceEntries(kFileManagerGenResources);
+diff --git a/chrome/browser/extensions/extension_action_runner_browsertest.cc b/chrome/browser/extensions/extension_action_runner_browsertest.cc
+index 3a5f63adb1af9..f8b7ed8d291a5 100644
+--- a/chrome/browser/extensions/extension_action_runner_browsertest.cc
++++ b/chrome/browser/extensions/extension_action_runner_browsertest.cc
+@@ -169,11 +169,11 @@ const Extension* ExtensionActionRunnerBrowserTest::CreateExtension(
+          })",
+       name.c_str(), permissions.c_str(), scripts.c_str());
+ 
+   TestExtensionDir dir;
+   dir.WriteManifest(manifest);
+-#if BUILDFLAG(ENABLE_DESKTOP_ANDROID_EXTENSIONS)
++#if BUILDFLAG(ENABLE_DESKTOP_ANDROID_EXTENSIONS_VANADIUM)
+   // TODO(crbug.com/371432155): kBackgroundScriptSource uses chrome.tabs, which
+   // isn't supported yet.
+   CHECK_EQ(injection_type, CONTENT_SCRIPT);
+ #endif
+   dir.WriteFile(FILE_PATH_LITERAL("script.js"), injection_type == CONTENT_SCRIPT
+diff --git a/chrome/browser/extensions/extension_management.cc b/chrome/browser/extensions/extension_management.cc
+index e3250a9d8fa8f..94c947155b14f 100644
+--- a/chrome/browser/extensions/extension_management.cc
++++ b/chrome/browser/extensions/extension_management.cc
+@@ -176,11 +176,11 @@ ManagedInstallationMode ExtensionManagement::GetInstallationMode(
+       extension->manifest()->FindStringPath(manifest_keys::kUpdateURL);
+   return GetInstallationMode(extension->id(),
+                              update_url ? *update_url : std::string());
+ }
+ 
+-#if BUILDFLAG(ENABLE_DESKTOP_ANDROID_EXTENSIONS)
++#if BUILDFLAG(ENABLE_DESKTOP_ANDROID_EXTENSIONS_VANADIUM)
+ bool ExtensionManagement::ExtensionsEnabledForDesktopAndroid() const {
+   // If Finch has enabled extensions for corp, allow them.
+   if (base::FeatureList::IsEnabled(
+           extensions_features::kEnableExtensionsForCorpDesktopAndroid)) {
+     return true;
+@@ -195,24 +195,24 @@ bool ExtensionManagement::ExtensionsEnabledForDesktopAndroid() const {
+       return false;
+     }
+   }
+   return true;
+ }
+-#endif  // BUILDFLAG(ENABLE_DESKTOP_ANDROID_EXTENSIONS)
++#endif  // BUILDFLAG(ENABLE_DESKTOP_ANDROID_EXTENSIONS_VANADIUM)
+ 
+ ManagedInstallationMode ExtensionManagement::GetInstallationMode(
+     const ExtensionId& extension_id,
+     const std::string& update_url) {
+-#if BUILDFLAG(ENABLE_DESKTOP_ANDROID_EXTENSIONS)
++#if BUILDFLAG(ENABLE_DESKTOP_ANDROID_EXTENSIONS_VANADIUM)
+   // Block extensions for managed profiles on Desktop Android. This is
+   // temporary until extensions are ready for dogfooding.
+   // TODO(crbug.com/422307625): Remove this check once extensions are ready for
+   // dogfooding.
+   if (!ExtensionsEnabledForDesktopAndroid()) {
+     return ManagedInstallationMode::kRemoved;
+   }
+-#endif  // BUILDFLAG(ENABLE_DESKTOP_ANDROID_EXTENSIONS)
++#endif  // BUILDFLAG(ENABLE_DESKTOP_ANDROID_EXTENSIONS_VANADIUM)
+ 
+   // Check per-extension installation mode setting first.
+   auto* setting = GetSettingsForId(extension_id);
+   if (setting)
+     return setting->installation_mode;
+diff --git a/chrome/browser/extensions/extension_management.h b/chrome/browser/extensions/extension_management.h
+index 8be0e7512e2bd..a07337a30674d 100644
+--- a/chrome/browser/extensions/extension_management.h
++++ b/chrome/browser/extensions/extension_management.h
+@@ -105,17 +105,17 @@ class ExtensionManagement : public KeyedService,
+   // Checks if extensions are blocklisted by default, by policy. When true,
+   // this means that even extensions without an ID should be blocklisted (e.g.
+   // from the command line, or when loaded as an unpacked extension).
+   bool BlocklistedByDefault() const;
+ 
+-#if BUILDFLAG(ENABLE_DESKTOP_ANDROID_EXTENSIONS)
++#if BUILDFLAG(ENABLE_DESKTOP_ANDROID_EXTENSIONS_VANADIUM)
+   // Checks if extensions are enabled for Desktop Android for the current
+   // profile. This is temporary for until extensions are ready for dogfooding.
+   // TODO(crbug.com/422307625): Remove this check once extensions are ready for
+   // dogfooding.
+   bool ExtensionsEnabledForDesktopAndroid() const;
+-#endif  // BUILDFLAG(ENABLE_DESKTOP_ANDROID_EXTENSIONS)
++#endif  // BUILDFLAG(ENABLE_DESKTOP_ANDROID_EXTENSIONS_VANADIUM)
+ 
+   // Returns installation mode for an extension.
+   ManagedInstallationMode GetInstallationMode(const Extension* extension);
+ 
+   // Returns installation mode for an extension with id `extension_id` and
+diff --git a/chrome/browser/extensions/extension_management_unittest.cc b/chrome/browser/extensions/extension_management_unittest.cc
+index 45e92c5d8255e..6543dd217fa0e 100644
+--- a/chrome/browser/extensions/extension_management_unittest.cc
++++ b/chrome/browser/extensions/extension_management_unittest.cc
+@@ -1899,11 +1899,11 @@ TEST_F(ExtensionAdminPolicyTest, MustRemainEnabled) {
+   EXPECT_FALSE(MustRemainEnabled(extension_.get(), nullptr));
+   EXPECT_FALSE(MustRemainEnabled(extension_.get(), &error));
+   EXPECT_TRUE(error.empty());
+ }
+ 
+-#if BUILDFLAG(ENABLE_DESKTOP_ANDROID_EXTENSIONS)
++#if BUILDFLAG(ENABLE_DESKTOP_ANDROID_EXTENSIONS_VANADIUM)
+ class ExtensionManagementDesktopAndroidTest : public testing::Test {
+  public:
+   ExtensionManagementDesktopAndroidTest() = default;
+   ExtensionManagementDesktopAndroidTest(
+       const ExtensionManagementDesktopAndroidTest&) = delete;
+@@ -1951,8 +1951,8 @@ TEST_F(ExtensionManagementDesktopAndroidTest, FeatureFlagOff) {
+ 
+   // Extensions are blocked because this is a corp dogfood user.
+   EXPECT_FALSE(management.ExtensionsEnabledForDesktopAndroid());
+ }
+ 
+-#endif  // BUILDFLAG(ENABLE_DESKTOP_ANDROID_EXTENSIONS)
++#endif  // BUILDFLAG(ENABLE_DESKTOP_ANDROID_EXTENSIONS_VANADIUM)
+ 
+ }  // namespace extensions
+diff --git a/chrome/browser/media/router/media_router_feature.cc b/chrome/browser/media/router/media_router_feature.cc
+index 692bdeae8f41b..66ec06670bc1b 100644
+--- a/chrome/browser/media/router/media_router_feature.cc
++++ b/chrome/browser/media/router/media_router_feature.cc
+@@ -28,11 +28,11 @@
+ #include "content/public/common/content_features.h"
+ #include "crypto/random.h"
+ #include "extensions/buildflags/buildflags.h"
+ #include "ui/base/buildflags.h"
+ 
+-#if !BUILDFLAG(IS_ANDROID) || BUILDFLAG(ENABLE_DESKTOP_ANDROID_EXTENSIONS)
++#if !BUILDFLAG(IS_ANDROID) || BUILDFLAG(ENABLE_DESKTOP_ANDROID_EXTENSIONS_VANADIUM)
+ #include "components/prefs/pref_registry_simple.h"
+ #endif
+ 
+ #if BUILDFLAG(IS_CHROMEOS)
+ #include "chromeos/ash/components/browser_context_helper/browser_context_types.h"
+@@ -41,11 +41,11 @@
+ // NOTE: Consider separating out UI-only features that are not consumed by the
+ // Media Router itself into their own file in chrome/browser/ui/media_router.
+ 
+ namespace media_router {
+ 
+-#if !BUILDFLAG(IS_ANDROID) || BUILDFLAG(ENABLE_DESKTOP_ANDROID_EXTENSIONS)
++#if !BUILDFLAG(IS_ANDROID) || BUILDFLAG(ENABLE_DESKTOP_ANDROID_EXTENSIONS_VANADIUM)
+ BASE_FEATURE(kMediaRouter, base::FEATURE_ENABLED_BY_DEFAULT);
+ BASE_FEATURE(kCastAllowAllIPsFeature,
+              "CastAllowAllIPs",
+              base::FEATURE_DISABLED_BY_DEFAULT);
+ BASE_FEATURE(kAllowAllSitesToInitiateMirroring,
+@@ -64,11 +64,11 @@ BASE_FEATURE(kFallbackToAudioTabMirroring,
+ #else
+              base::FEATURE_ENABLED_BY_DEFAULT);
+ #endif  // BUILDFLAG(IS_CHROMEOS)
+ 
+ #endif  // !BUILDFLAG(IS_ANDROID) ||
+-        // BUILDFLAG(ENABLE_DESKTOP_ANDROID_EXTENSIONS)
++        // BUILDFLAG(ENABLE_DESKTOP_ANDROID_EXTENSIONS_VANADIUM)
+ 
+ #if BUILDFLAG(IS_MAC)
+ BASE_FEATURE(kUseNetworkFrameworkForLocalDiscovery,
+              base::FEATURE_ENABLED_BY_DEFAULT);
+ #endif
+@@ -85,30 +85,30 @@ base::flat_map<content::BrowserContext*, bool>& GetStoredPrefValues() {
+       stored_pref_values;
+ 
+   return *stored_pref_values;
+ }
+ 
+-#if !BUILDFLAG(IS_ANDROID) || BUILDFLAG(ENABLE_DESKTOP_ANDROID_EXTENSIONS)
++#if !BUILDFLAG(IS_ANDROID) || BUILDFLAG(ENABLE_DESKTOP_ANDROID_EXTENSIONS_VANADIUM)
+ // TODO(mfoltz): Add full implementation for validating playout delay value.
+ bool IsValidMirroringPlayoutDelayMs(int delay_ms) {
+   return delay_ms <= 1000 && delay_ms >= 1;
+ }
+ #endif  // !BUILDFLAG(IS_ANDROID) ||
+-        // BUILDFLAG(ENABLE_DESKTOP_ANDROID_EXTENSIONS)
++        // BUILDFLAG(ENABLE_DESKTOP_ANDROID_EXTENSIONS_VANADIUM)
+ }  // namespace
+ 
+ void ClearMediaRouterStoredPrefsForTesting() {
+   GetStoredPrefValues().clear();
+ }
+ 
+ bool MediaRouterEnabled(content::BrowserContext* context) {
+-#if !BUILDFLAG(IS_ANDROID) || BUILDFLAG(ENABLE_DESKTOP_ANDROID_EXTENSIONS)
++#if !BUILDFLAG(IS_ANDROID) || BUILDFLAG(ENABLE_DESKTOP_ANDROID_EXTENSIONS_VANADIUM)
+   if (!base::FeatureList::IsEnabled(kMediaRouter)) {
+     return false;
+   }
+ #endif  // !BUILDFLAG(IS_ANDROID) ||
+-        // BUILDFLAG(ENABLE_DESKTOP_ANDROID_EXTENSIONS)
++        // BUILDFLAG(ENABLE_DESKTOP_ANDROID_EXTENSIONS_VANADIUM)
+ #if BUILDFLAG(IS_CHROMEOS)
+   // TODO(crbug.com/1380828): Make the Media Router feature configurable via a
+   // policy for non-user profiles, i.e. sign-in and lock screen profiles.
+   if (!ash::IsUserBrowserContext(context)) {
+     return false;
+@@ -134,11 +134,11 @@ bool MediaRouterEnabled(content::BrowserContext* context) {
+     return allowed;
+   }
+   return false;
+ }
+ 
+-#if !BUILDFLAG(IS_ANDROID) || BUILDFLAG(ENABLE_DESKTOP_ANDROID_EXTENSIONS)
++#if !BUILDFLAG(IS_ANDROID) || BUILDFLAG(ENABLE_DESKTOP_ANDROID_EXTENSIONS_VANADIUM)
+ void RegisterLocalStatePrefs(PrefRegistrySimple* registry) {
+   registry->RegisterBooleanPref(prefs::kMediaRouterCastAllowAllIPs, false,
+                                 PrefRegistry::PUBLIC);
+   registry->RegisterBooleanPref(prefs::kSuppressLocalDiscoveryPermissionError,
+                                 false);
+@@ -207,8 +207,8 @@ std::optional<base::TimeDelta> GetCastMirroringPlayoutDelay() {
+ 
+ bool IsCastMessageLoggingEnabled() {
+   return base::FeatureList::IsEnabled(kCastMessageLogging);
+ }
+ #endif  // !BUILDFLAG(IS_ANDROID) ||
+-        // BUILDFLAG(ENABLE_DESKTOP_ANDROID_EXTENSIONS)
++        // BUILDFLAG(ENABLE_DESKTOP_ANDROID_EXTENSIONS_VANADIUM)
+ 
+ }  // namespace media_router
+diff --git a/chrome/browser/media/router/media_router_feature.h b/chrome/browser/media/router/media_router_feature.h
+index 56b7c19b5d063..611987ad67996 100644
+--- a/chrome/browser/media/router/media_router_feature.h
++++ b/chrome/browser/media/router/media_router_feature.h
+@@ -25,11 +25,11 @@ bool MediaRouterEnabled(content::BrowserContext* context);
+ 
+ // Clears stored prefs so they don't leak between tests running in the same
+ // process.
+ void ClearMediaRouterStoredPrefsForTesting();
+ 
+-#if !BUILDFLAG(IS_ANDROID) || BUILDFLAG(ENABLE_DESKTOP_ANDROID_EXTENSIONS)
++#if !BUILDFLAG(IS_ANDROID) || BUILDFLAG(ENABLE_DESKTOP_ANDROID_EXTENSIONS_VANADIUM)
+ // Enables the media router. Can be disabled in tests unrelated to
+ // Media Router where it interferes. Can also be useful to disable for local
+ // development on Mac because DIAL local discovery opens a local port
+ // and triggers a permission prompt.
+ BASE_DECLARE_FEATURE(kMediaRouter);
+@@ -100,10 +100,10 @@ std::optional<base::TimeDelta> GetCastMirroringPlayoutDelay();
+ // Chrome, and Web pages using the Presentation API into
+ // chrome://media-router-internals.  These logs can verbose and contain
+ // sensitive information, so use with caution.
+ bool IsCastMessageLoggingEnabled();
+ #endif  // !BUILDFLAG(IS_ANDROID) ||
+-        // BUILDFLAG(ENABLE_DESKTOP_ANDROID_EXTENSIONS)
++        // BUILDFLAG(ENABLE_DESKTOP_ANDROID_EXTENSIONS_VANADIUM)
+ 
+ }  // namespace media_router
+ 
+ #endif  // CHROME_BROWSER_MEDIA_ROUTER_MEDIA_ROUTER_FEATURE_H_
+diff --git a/chrome/browser/media/webrtc/webrtc_event_log_manager.cc b/chrome/browser/media/webrtc/webrtc_event_log_manager.cc
+index 7cabdcff62d29..350b4015ee0b5 100644
+--- a/chrome/browser/media/webrtc/webrtc_event_log_manager.cc
++++ b/chrome/browser/media/webrtc/webrtc_event_log_manager.cc
+@@ -111,11 +111,11 @@ class PeerConnectionTrackerProxyImpl
+ 
+ // Check whether remote-bound logging is generally allowed, although not
+ // necessarily for any given user profile.
+ // Certain platforms (mobile) are blocked from remote-bound logging.
+ bool IsRemoteLoggingFeatureEnabled() {
+-#if BUILDFLAG(IS_ANDROID) && !BUILDFLAG(IS_DESKTOP_ANDROID)
++#if BUILDFLAG(IS_ANDROID) && !BUILDFLAG(IS_DESKTOP_ANDROID_VANADIUM)
+   bool enabled = false;
+ #else
+   bool enabled = true;
+ #endif
+ 
+@@ -461,11 +461,11 @@ bool WebRtcEventLogManager::IsRemoteLoggingAllowedForBrowserContext(
+ std::unique_ptr<LogFileWriter::Factory>
+ WebRtcEventLogManager::CreateRemoteLogFileWriterFactory() {
+   if (remote_log_file_writer_factory_for_testing_) {
+     return std::move(remote_log_file_writer_factory_for_testing_);
+   } else {
+-#if !BUILDFLAG(IS_ANDROID) || BUILDFLAG(IS_DESKTOP_ANDROID)
++#if !BUILDFLAG(IS_ANDROID) || BUILDFLAG(IS_DESKTOP_ANDROID_VANADIUM)
+     return std::make_unique<GzippedLogFileWriterFactory>(
+         std::make_unique<GzipLogCompressorFactory>(
+             std::make_unique<DefaultGzippedSizeEstimator::Factory>()));
+ #else
+     return std::make_unique<BaseLogFileWriterFactory>();
+diff --git a/chrome/browser/prefs/chrome_pref_service_unittest.cc b/chrome/browser/prefs/chrome_pref_service_unittest.cc
+index 1cf58019a1068..046d3dcfc4d4b 100644
+--- a/chrome/browser/prefs/chrome_pref_service_unittest.cc
++++ b/chrome/browser/prefs/chrome_pref_service_unittest.cc
+@@ -76,11 +76,11 @@ TEST_F(ChromePrefServiceWebKitPrefs, PrefsCopied) {
+   WebPreferences webkit_prefs =
+       RenderViewHostTester::For(rvh())->TestComputeWebPreferences();
+ 
+   // These values have been overridden by the profile preferences.
+   EXPECT_EQ("UTF-8", webkit_prefs.default_encoding);
+-#if !BUILDFLAG(IS_ANDROID) || BUILDFLAG(ENABLE_DESKTOP_ANDROID_EXTENSIONS)
++#if !BUILDFLAG(IS_ANDROID) || BUILDFLAG(ENABLE_DESKTOP_ANDROID_EXTENSIONS_VANADIUM)
+   EXPECT_EQ(20, webkit_prefs.default_font_size);
+ #else
+   // This pref is not configurable on Android without extensions so the default
+   // of 16 is always used.
+   EXPECT_EQ(16, webkit_prefs.default_font_size);
+diff --git a/chrome/browser/profiles/chrome_browser_main_extra_parts_profiles.cc b/chrome/browser/profiles/chrome_browser_main_extra_parts_profiles.cc
+index 22c92e93e2199..8b0c89ed54b6c 100644
+--- a/chrome/browser/profiles/chrome_browser_main_extra_parts_profiles.cc
++++ b/chrome/browser/profiles/chrome_browser_main_extra_parts_profiles.cc
+@@ -639,11 +639,11 @@ void ChromeBrowserMainExtraPartsProfiles::
+ #if BUILDFLAG(IS_CHROMEOS)
+   chromeos::EnsureBrowserContextKeyedServiceFactoriesBuilt();
+   chromeos_extensions::EnsureBrowserContextKeyedServiceFactoriesBuilt();
+ #endif
+   extensions::EnsureBrowserContextKeyedServiceFactoriesBuilt();
+-#elif BUILDFLAG(ENABLE_DESKTOP_ANDROID_EXTENSIONS)
++#elif BUILDFLAG(ENABLE_DESKTOP_ANDROID_EXTENSIONS_VANADIUM)
+   chrome_extensions::EnsureBrowserContextKeyedServiceFactoriesBuilt();
+   // EnsureBrowserContextKeyedServiceFactoriesBuilt() is invoked before the
+   // ExtensionsBrowserClient is ready on Android. This is due to Android
+   // specific initialization steps in
+   // ChromeMainDelegate::PostEarlyInitialization(). ExtensionsBrowserClient is
+diff --git a/chrome/browser/spellchecker/spellcheck_custom_dictionary_unittest.cc b/chrome/browser/spellchecker/spellcheck_custom_dictionary_unittest.cc
+index a3ad37505715e..a0d5613f31e45 100644
+--- a/chrome/browser/spellchecker/spellcheck_custom_dictionary_unittest.cc
++++ b/chrome/browser/spellchecker/spellcheck_custom_dictionary_unittest.cc
+@@ -702,11 +702,11 @@ TEST_F(SpellcheckCustomDictionaryTest, DictionaryRemoveWordNotification) {
+ // sync server upon association. The client should accept words from the sync
+ // server, however.
+ // TODO(crbug.com/460064444): Maybe re-enable this test on Desktop Android
+ // builds. This flow is never exercised on Android because Dictionary is not
+ // synced on Android, but maybe this test failure hints at a real bug.
+-#if !BUILDFLAG(IS_DESKTOP_ANDROID)
++#if !BUILDFLAG(IS_DESKTOP_ANDROID_VANADIUM)
+ TEST_F(SpellcheckCustomDictionaryTest, DictionarySyncLimit) {
+   // Here, |server_custom_dictionary| plays the role of the sync server.
+   SpellcheckCustomDictionary* server_custom_dictionary =
+       MakeExtraProfileDictionary();
+ 
+@@ -775,11 +775,11 @@ TEST_F(SpellcheckCustomDictionaryTest, DictionarySyncLimit) {
+   // The sync server should not receive more words, because it has the maximum
+   // number of words already.
+   EXPECT_EQ(spellcheck::kMaxSyncableDictionaryWords,
+             server_custom_dictionary->GetWords().size());
+ }
+-#endif  // !BUILDFLAG(IS_DESKTOP_ANDROID)
++#endif  // !BUILDFLAG(IS_DESKTOP_ANDROID_VANADIUM)
+ 
+ TEST_F(SpellcheckCustomDictionaryTest, HasWord) {
+   SpellcheckService* spellcheck_service =
+       SpellcheckServiceFactory::GetForContext(&profile_);
+   SpellcheckCustomDictionary* custom_dictionary =
+diff --git a/chrome/browser/startup_data.cc b/chrome/browser/startup_data.cc
+index fb9efdc402cb4..f2b6a3970c857 100644
+--- a/chrome/browser/startup_data.cc
++++ b/chrome/browser/startup_data.cc
+@@ -49,11 +49,11 @@
+ #include "components/variations/service/variations_service.h"
+ #include "content/public/browser/network_service_instance.h"
+ #include "mojo/public/cpp/bindings/pending_remote.h"
+ #include "services/preferences/public/mojom/tracked_preference_validation_delegate.mojom.h"
+ 
+-#if BUILDFLAG(ENABLE_DESKTOP_ANDROID_EXTENSIONS)
++#if BUILDFLAG(ENABLE_DESKTOP_ANDROID_EXTENSIONS_VANADIUM)
+ #include "chrome/browser/extensions/chrome_extensions_browser_client.h"
+ #include "extensions/browser/extensions_browser_client.h"
+ #endif
+ 
+ namespace {
+@@ -161,11 +161,11 @@ StartupData::TakeProtoDatabaseProvider() {
+ }
+ 
+ void StartupData::PreProfilePrefServiceInit() {
+   pref_registry_ = base::MakeRefCounted<user_prefs::PrefRegistrySyncable>();
+ 
+-#if BUILDFLAG(ENABLE_DESKTOP_ANDROID_EXTENSIONS)
++#if BUILDFLAG(ENABLE_DESKTOP_ANDROID_EXTENSIONS_VANADIUM)
+   // On desktop Android the ExtensionsBrowserClient is created here because it
+   // must be initialized before BrowserContextKeyedServiceFactories are built.
+   // Some factories use ExtensionsBrowserClient::Get() in their DependsOn().
+   extensions_browser_client_ =
+       std::make_unique<extensions::ChromeExtensionsBrowserClient>();
+@@ -241,11 +241,11 @@ void StartupData::CreateServicesInternal() {
+       std::move(pref_validation_delegate), io_task_runner, key_.get(), path,
+       false /* async_prefs*/, g_browser_process->os_crypt_async());
+ }
+ #endif
+ 
+-#if BUILDFLAG(ENABLE_DESKTOP_ANDROID_EXTENSIONS)
++#if BUILDFLAG(ENABLE_DESKTOP_ANDROID_EXTENSIONS_VANADIUM)
+ std::unique_ptr<extensions::ExtensionsBrowserClient>
+ StartupData::TakeExtensionsBrowserClient() {
+   return std::move(extensions_browser_client_);
+ }
+ #endif
+diff --git a/chrome/browser/startup_data.h b/chrome/browser/startup_data.h
+index b15ed4ef91028..dff9ada149afa 100644
+--- a/chrome/browser/startup_data.h
++++ b/chrome/browser/startup_data.h
+@@ -10,11 +10,11 @@
+ #include "base/memory/scoped_refptr.h"
+ #include "build/build_config.h"
+ #include "components/leveldb_proto/public/proto_database_provider.h"
+ #include "extensions/buildflags/buildflags.h"
+ 
+-#if BUILDFLAG(ENABLE_DESKTOP_ANDROID_EXTENSIONS)
++#if BUILDFLAG(ENABLE_DESKTOP_ANDROID_EXTENSIONS_VANADIUM)
+ namespace extensions {
+ class ExtensionsBrowserClient;
+ }
+ #endif
+ 
+@@ -90,11 +90,11 @@ class StartupData {
+   // Passes ownership of the |proto_db_provider_| to the caller.
+   std::unique_ptr<leveldb_proto::ProtoDatabaseProvider>
+   TakeProtoDatabaseProvider();
+ #endif
+ 
+-#if BUILDFLAG(ENABLE_DESKTOP_ANDROID_EXTENSIONS)
++#if BUILDFLAG(ENABLE_DESKTOP_ANDROID_EXTENSIONS_VANADIUM)
+   // Passes ownership of the `extensions_browser_client_` to the caller.
+   std::unique_ptr<extensions::ExtensionsBrowserClient>
+   TakeExtensionsBrowserClient();
+ #endif
+ 
+@@ -118,11 +118,11 @@ class StartupData {
+   std::unique_ptr<sync_preferences::PrefServiceSyncable> prefs_;
+ 
+   std::unique_ptr<leveldb_proto::ProtoDatabaseProvider> proto_db_provider_;
+ #endif
+ 
+-#if BUILDFLAG(ENABLE_DESKTOP_ANDROID_EXTENSIONS)
++#if BUILDFLAG(ENABLE_DESKTOP_ANDROID_EXTENSIONS_VANADIUM)
+   std::unique_ptr<extensions::ExtensionsBrowserClient>
+       extensions_browser_client_;
+ #endif
+ 
+   std::unique_ptr<ChromeFeatureListCreator> chrome_feature_list_creator_;
+diff --git a/chrome/browser/task_manager/common/task_manager_features.cc b/chrome/browser/task_manager/common/task_manager_features.cc
+index 6867977da6a0f..c6e105d294259 100644
+--- a/chrome/browser/task_manager/common/task_manager_features.cc
++++ b/chrome/browser/task_manager/common/task_manager_features.cc
+@@ -9,15 +9,15 @@
+ namespace features {
+ 
+ #if BUILDFLAG(IS_ANDROID)
+ // Enables the Task Manager on Clank.
+ BASE_FEATURE(kTaskManagerClank,
+-#if BUILDFLAG(IS_DESKTOP_ANDROID)
++#if BUILDFLAG(IS_DESKTOP_ANDROID_VANADIUM)
+              base::FEATURE_ENABLED_BY_DEFAULT
+ #else
+              base::FEATURE_DISABLED_BY_DEFAULT
+-#endif  // BUILDFLAG(IS_DESKTOP_ANDROID)
++#endif  // BUILDFLAG(IS_DESKTOP_ANDROID_VANADIUM)
+ );
+ #else
+ // Enables the Task Manager Desktop Refresh project.
+ BASE_FEATURE(kTaskManagerDesktopRefresh, base::FEATURE_ENABLED_BY_DEFAULT);
+ #endif  // BUILDFLAG(IS_ANDROID)
+diff --git a/chrome/browser/ui/android/context_menu_helper.cc b/chrome/browser/ui/android/context_menu_helper.cc
+index 2beb8a7740e42..c25ea3e5afee1 100644
+--- a/chrome/browser/ui/android/context_menu_helper.cc
++++ b/chrome/browser/ui/android/context_menu_helper.cc
+@@ -22,14 +22,14 @@
+ #include "ui/android/view_android.h"
+ #include "ui/gfx/geometry/point.h"
+ #include "ui/gfx/geometry/size.h"
+ #include "url/gurl.h"
+ 
+-#if BUILDFLAG(ENABLE_DESKTOP_ANDROID_EXTENSIONS)
++#if BUILDFLAG(ENABLE_DESKTOP_ANDROID_EXTENSIONS_VANADIUM)
+ #include "chrome/browser/extensions/extension_menu_model_android.h"
+ #include "ui/menus/simple_menu_model.h"
+-#endif  // BUILDFLAG(ENABLE_DESKTOP_ANDROID_EXTENSIONS)
++#endif  // BUILDFLAG(ENABLE_DESKTOP_ANDROID_EXTENSIONS_VANADIUM)
+ 
+ // Must come after all headers that specialize FromJniType() / ToJniType().
+ #include "chrome/android/chrome_jni_headers/ContextMenuHelper_jni.h"
+ 
+ using base::android::JavaParamRef;
+@@ -43,13 +43,13 @@ ContextMenuHelper::ContextMenuHelper(content::WebContents* web_contents)
+                                          web_contents->GetJavaWebContents()));
+   DCHECK(!java_obj_.is_null());
+ }
+ 
+ ContextMenuHelper::~ContextMenuHelper() {
+-#if BUILDFLAG(ENABLE_DESKTOP_ANDROID_EXTENSIONS)
++#if BUILDFLAG(ENABLE_DESKTOP_ANDROID_EXTENSIONS_VANADIUM)
+   extension_menu_model_.reset();
+-#endif  // BUILDFLAG(ENABLE_DESKTOP_ANDROID_EXTENSIONS)
++#endif  // BUILDFLAG(ENABLE_DESKTOP_ANDROID_EXTENSIONS_VANADIUM)
+   JNIEnv* env = base::android::AttachCurrentThread();
+   Java_ContextMenuHelper_destroy(env, java_obj_);
+ }
+ 
+ void ContextMenuHelper::ShowContextMenu(
+@@ -57,21 +57,21 @@ void ContextMenuHelper::ShowContextMenu(
+     const content::ContextMenuParams& params) {
+   JNIEnv* env = base::android::AttachCurrentThread();
+   context_menu_params_ = params;
+   gfx::NativeView view = GetWebContents().GetNativeView();
+ 
+-#if BUILDFLAG(ENABLE_DESKTOP_ANDROID_EXTENSIONS)
++#if BUILDFLAG(ENABLE_DESKTOP_ANDROID_EXTENSIONS_VANADIUM)
+   // Reset any previous menu model, in case a new menu is shown
+   // before the old one was gracefully closed.
+   extension_menu_model_.reset();
+   extension_menu_model_ = std::make_unique<extensions::ExtensionMenuModel>(
+       render_frame_host, params);
+   extension_menu_model_->PopulateModel();
+   ui::MenuModel* model_ptr = extension_menu_model_.get();
+ #else
+   ui::MenuModel* model_ptr = nullptr;
+-#endif  // BUILDFLAG(ENABLE_DESKTOP_ANDROID_EXTENSIONS)
++#endif  // BUILDFLAG(ENABLE_DESKTOP_ANDROID_EXTENSIONS_VANADIUM)
+ 
+   Java_ContextMenuHelper_showContextMenu(
+       env, java_obj_,
+       context_menu::BuildJavaContextMenuParams(
+           context_menu_params_, model_ptr,
+diff --git a/chrome/browser/ui/android/context_menu_helper.h b/chrome/browser/ui/android/context_menu_helper.h
+index 84193246fcb66..8e4aca042ad51 100644
+--- a/chrome/browser/ui/android/context_menu_helper.h
++++ b/chrome/browser/ui/android/context_menu_helper.h
+@@ -12,15 +12,15 @@
+ #include "content/public/browser/render_frame_host.h"
+ #include "content/public/browser/web_contents_user_data.h"
+ #include "extensions/buildflags/buildflags.h"
+ #include "mojo/public/cpp/bindings/associated_remote.h"
+ 
+-#if BUILDFLAG(ENABLE_DESKTOP_ANDROID_EXTENSIONS)
++#if BUILDFLAG(ENABLE_DESKTOP_ANDROID_EXTENSIONS_VANADIUM)
+ namespace extensions {
+ class ExtensionMenuModel;
+ }
+-#endif  // BUILDFLAG(ENABLE_DESKTOP_ANDROID_EXTENSIONS)
++#endif  // BUILDFLAG(ENABLE_DESKTOP_ANDROID_EXTENSIONS_VANADIUM)
+ 
+ namespace content {
+ class WebContents;
+ }
+ 
+@@ -51,13 +51,13 @@ class ContextMenuHelper
+ 
+   base::android::ScopedJavaGlobalRef<jobject> java_obj_;
+ 
+   content::ContextMenuParams context_menu_params_;
+ 
+-#if BUILDFLAG(ENABLE_DESKTOP_ANDROID_EXTENSIONS)
++#if BUILDFLAG(ENABLE_DESKTOP_ANDROID_EXTENSIONS_VANADIUM)
+   std::unique_ptr<extensions::ExtensionMenuModel> extension_menu_model_;
+-#endif  // BUILDFLAG(ENABLE_DESKTOP_ANDROID_EXTENSIONS)
++#endif  // BUILDFLAG(ENABLE_DESKTOP_ANDROID_EXTENSIONS_VANADIUM)
+ 
+   WEB_CONTENTS_USER_DATA_KEY_DECL();
+ };
+ 
+ #endif  // CHROME_BROWSER_UI_ANDROID_CONTEXT_MENU_HELPER_H_
+diff --git a/chrome/browser/ui/android/tab_model/tab_model.cc b/chrome/browser/ui/android/tab_model/tab_model.cc
+index 7690643471e08..3f304bb81650e 100644
+--- a/chrome/browser/ui/android/tab_model/tab_model.cc
++++ b/chrome/browser/ui/android/tab_model/tab_model.cc
+@@ -18,11 +18,11 @@
+ #include "components/sessions/core/session_id.h"
+ #include "components/sync_sessions/open_tabs_ui_delegate.h"
+ #include "components/sync_sessions/session_sync_service.h"
+ #include "ui/base/unowned_user_data/scoped_unowned_user_data.h"
+ 
+-#if BUILDFLAG(IS_DESKTOP_ANDROID)
++#if BUILDFLAG(IS_DESKTOP_ANDROID_VANADIUM)
+ #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"  // nogncheck
+ #endif
+ 
+ using chrome::android::ActivityType;
+ 
+@@ -51,11 +51,11 @@ sync_sessions::OpenTabsUIDelegate* GetOpenTabsUIDelegate(Profile* profile) {
+ // |SessionID:NewUnique|.
+ //
+ // TODO(http://crbug.com/444518651): remove the if-def when
+ // |BrowserWindowInterface| is compiled into all Android builds.
+ SessionID GetInitialSessionId() {
+-#if BUILDFLAG(IS_DESKTOP_ANDROID)
++#if BUILDFLAG(IS_DESKTOP_ANDROID_VANADIUM)
+   return SessionID::InvalidValue();
+ #else
+   return SessionID::NewUnique();
+ #endif
+ }
+@@ -160,11 +160,11 @@ void TabModel::RecordActualSyncedTabsHistogram() {
+                                percent_synced);
+ }
+ 
+ // TODO(http://crbug.com/444518651): remove the if-def when
+ // |BrowserWindowInterface| is compiled into all Android builds.
+-#if BUILDFLAG(IS_DESKTOP_ANDROID)
++#if BUILDFLAG(IS_DESKTOP_ANDROID_VANADIUM)
+ void TabModel::SetSessionId(SessionID session_id) {
+   session_id_ = session_id;
+ }
+ 
+ // static
+diff --git a/chrome/browser/ui/android/tab_model/tab_model.h b/chrome/browser/ui/android/tab_model/tab_model.h
+index 4babb39ff3da5..cb64d828996de 100644
+--- a/chrome/browser/ui/android/tab_model/tab_model.h
++++ b/chrome/browser/ui/android/tab_model/tab_model.h
+@@ -290,11 +290,11 @@ class TabModel : public TabListInterface {
+   // loaded from storage.
+   void BroadcastSessionRestoreComplete();
+ 
+   LocationBarModel* GetLocationBarModel();
+ 
+-#if BUILDFLAG(IS_DESKTOP_ANDROID)
++#if BUILDFLAG(IS_DESKTOP_ANDROID_VANADIUM)
+   // Sets the |SessionID|.
+   //
+   // This is only needed on desktop Android, where |BrowserWindowInterface|
+   // should be the source of truth for |SessionID|. This function will be
+   // called when |TabModel| is associated with a |BrowserWindowInterface|.
+diff --git a/chrome/browser/ui/android/tab_model/tab_model_jni_bridge.cc b/chrome/browser/ui/android/tab_model/tab_model_jni_bridge.cc
+index af9182a320cf3..1856cda429d52 100644
+--- a/chrome/browser/ui/android/tab_model/tab_model_jni_bridge.cc
++++ b/chrome/browser/ui/android/tab_model/tab_model_jni_bridge.cc
+@@ -43,11 +43,11 @@
+ #include "url/android/gurl_android.h"
+ #include "url/origin.h"
+ 
+ // "chrome/browser/ui/browser_window" is available on desktop Android, but not
+ // other Android builds.
+-#if BUILDFLAG(IS_DESKTOP_ANDROID)
++#if BUILDFLAG(IS_DESKTOP_ANDROID_VANADIUM)
+ #include "chrome/browser/ui/browser_window/internal/android/android_browser_window.h"  // nogncheck
+ #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"  // nogncheck
+ #include "chrome/browser/ui/browser_window/public/browser_window_interface_iterator.h"  // nogncheck
+ #endif
+ 
+@@ -76,20 +76,20 @@ std::vector<TabAndroid*> GetAllTabsFromHandles(
+     tabs.push_back(tab_android);
+   }
+   return tabs;
+ }
+ 
+-#if BUILDFLAG(IS_DESKTOP_ANDROID)
++#if BUILDFLAG(IS_DESKTOP_ANDROID_VANADIUM)
+ AndroidBrowserWindow* GetAndroidBrowserWindow(SessionID session_id) {
+   for (BrowserWindowInterface* window : GetAllBrowserWindowInterfaces()) {
+     if (window->GetSessionID() == session_id) {
+       return static_cast<AndroidBrowserWindow*>(window);
+     }
+   }
+   return nullptr;
+ }
+-#endif  // BUILDFLAG(IS_DESKTOP_ANDROID)
++#endif  // BUILDFLAG(IS_DESKTOP_ANDROID_VANADIUM)
+ 
+ }  // namespace
+ 
+ TabModelJniBridge::TabModelJniBridge(JNIEnv* env,
+                                      const jni_zero::JavaRef<jobject>& jobj,
+@@ -115,11 +115,11 @@ void TabModelJniBridge::Destroy(JNIEnv* env) {
+ void TabModelJniBridge::AssociateWithBrowserWindow(
+     JNIEnv* env,
+     long native_android_browser_window) {
+ // BrowserWindowInterface is available on desktop Android, but not other Android
+ // builds. For non-desktop Android, this function should be a no-op.
+-#if BUILDFLAG(IS_DESKTOP_ANDROID)
++#if BUILDFLAG(IS_DESKTOP_ANDROID_VANADIUM)
+   BrowserWindowInterface* android_browser_window =
+       reinterpret_cast<BrowserWindowInterface*>(native_android_browser_window);
+   CHECK(android_browser_window != nullptr);
+ 
+   scoped_unowned_user_data_ =
+@@ -151,34 +151,34 @@ TabAndroid* TabModelJniBridge::DuplicateTab(JNIEnv* env, TabAndroid* tab) {
+ void TabModelJniBridge::MoveTabToWindowForTesting(
+     JNIEnv* env,
+     TabAndroid* tab,
+     long android_browser_window_ptr,
+     int new_index) {
+-#if BUILDFLAG(IS_DESKTOP_ANDROID)
++#if BUILDFLAG(IS_DESKTOP_ANDROID_VANADIUM)
+   SessionID destination_window_id =
+       reinterpret_cast<AndroidBrowserWindow*>(android_browser_window_ptr)
+           ->GetSessionID();
+   MoveTabToWindow(tab->GetHandle(), destination_window_id, new_index);
+ #else
+   NOTIMPLEMENTED();
+-#endif  // BUILDFLAG(IS_DESKTOP_ANDROID)
++#endif  // BUILDFLAG(IS_DESKTOP_ANDROID_VANADIUM)
+ }
+ 
+ void TabModelJniBridge::MoveTabGroupToWindowForTesting(
+     JNIEnv* env,
+     const base::Token& group_id,
+     long android_browser_window_ptr,
+     int new_index) {
+-#if BUILDFLAG(IS_DESKTOP_ANDROID)
++#if BUILDFLAG(IS_DESKTOP_ANDROID_VANADIUM)
+   SessionID destination_window_id =
+       reinterpret_cast<AndroidBrowserWindow*>(android_browser_window_ptr)
+           ->GetSessionID();
+   MoveTabGroupToWindow(tab_groups::TabGroupId::FromRawToken(group_id),
+                        destination_window_id, new_index);
+ #else
+   NOTIMPLEMENTED();
+-#endif  // BUILDFLAG(IS_DESKTOP_ANDROID)
++#endif  // BUILDFLAG(IS_DESKTOP_ANDROID_VANADIUM)
+ }
+ 
+ void TabModelJniBridge::SetMuteSetting(JNIEnv* env,
+                                        std::vector<TabAndroid*> tabs,
+                                        bool mute) {
+@@ -631,19 +631,19 @@ void TabModelJniBridge::MoveTabGroupToWindow(tab_groups::TabGroupId group_id,
+ }
+ 
+ ScopedJavaLocalRef<jobject> TabModelJniBridge::GetActivityForWindow(
+     SessionID window_id) {
+   ScopedJavaLocalRef<jobject> jactivity;
+-#if BUILDFLAG(IS_DESKTOP_ANDROID)
++#if BUILDFLAG(IS_DESKTOP_ANDROID_VANADIUM)
+   AndroidBrowserWindow* window = GetAndroidBrowserWindow(window_id);
+   if (!window) {
+     return jactivity;
+   }
+   CHECK_EQ(window->GetProfile()->IsOffTheRecord(),
+            GetProfile()->IsOffTheRecord());
+   jactivity = window->GetActivity();
+-#endif  // BUILDFLAG(IS_DESKTOP_ANDROID)
++#endif  // BUILDFLAG(IS_DESKTOP_ANDROID_VANADIUM)
+   return jactivity;
+ }
+ 
+ // static
+ jclass TabModelJniBridge::GetClazz(JNIEnv* env) {
+diff --git a/chrome/browser/ui/android/tab_model/tab_model_test_helper.cc b/chrome/browser/ui/android/tab_model/tab_model_test_helper.cc
+index 49934d4967f2f..3e538d8c0179c 100644
+--- a/chrome/browser/ui/android/tab_model/tab_model_test_helper.cc
++++ b/chrome/browser/ui/android/tab_model/tab_model_test_helper.cc
+@@ -29,11 +29,11 @@
+ #include "content/public/test/browser_test_utils.h"
+ #include "url/gurl.h"
+ 
+ // "chrome/browser/ui/browser_window" is available on desktop Android, but not
+ // other Android builds.
+-#if BUILDFLAG(IS_DESKTOP_ANDROID)
++#if BUILDFLAG(IS_DESKTOP_ANDROID_VANADIUM)
+ #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"  // nogncheck
+ #endif
+ 
+ TestTabModel::TestTabModel(Profile* profile,
+                            chrome::android::ActivityType activity_type)
+@@ -216,11 +216,11 @@ void TestTabModel::MoveTabGroupToWindow(tab_groups::TabGroupId group_id,
+                                         SessionID destination_window_id,
+                                         int destination_index) {
+   NOTIMPLEMENTED();
+ }
+ 
+-#if BUILDFLAG(IS_DESKTOP_ANDROID)
++#if BUILDFLAG(IS_DESKTOP_ANDROID_VANADIUM)
+ void TestTabModel::AssociateWithBrowserWindow(BrowserWindowInterface* browser) {
+   scoped_unowned_user_data_ =
+       std::make_unique<ui::ScopedUnownedUserData<TabModel>>(
+           browser->GetUnownedUserDataHost(), *this);
+ }
+diff --git a/chrome/browser/ui/android/tab_model/tab_model_test_helper.h b/chrome/browser/ui/android/tab_model/tab_model_test_helper.h
+index f13164f0e9e1f..414dc1db8f9ea 100644
+--- a/chrome/browser/ui/android/tab_model/tab_model_test_helper.h
++++ b/chrome/browser/ui/android/tab_model/tab_model_test_helper.h
+@@ -103,11 +103,11 @@ class TestTabModel : public TabModel {
+                             SessionID destination_window_id,
+                             int destination_index) override;
+ 
+ // BrowserWindowInterface is available on desktop Android, but not other Android
+ // builds.
+-#if BUILDFLAG(IS_DESKTOP_ANDROID)
++#if BUILDFLAG(IS_DESKTOP_ANDROID_VANADIUM)
+   void AssociateWithBrowserWindow(BrowserWindowInterface* browser_window);
+ #endif
+ 
+  private:
+   // A fake value for the current number of tabs.
+diff --git a/chrome/browser/ui/browser_navigator_params.cc b/chrome/browser/ui/browser_navigator_params.cc
+index 9989136605eed..7dbb73aa6e4d3 100644
+--- a/chrome/browser/ui/browser_navigator_params.cc
++++ b/chrome/browser/ui/browser_navigator_params.cc
+@@ -15,11 +15,11 @@
+ 
+ #if !BUILDFLAG(IS_ANDROID)
+ #include "chrome/browser/ui/browser.h"
+ #endif
+ 
+-#if !BUILDFLAG(IS_ANDROID) || BUILDFLAG(IS_DESKTOP_ANDROID)
++#if !BUILDFLAG(IS_ANDROID) || BUILDFLAG(IS_DESKTOP_ANDROID_VANADIUM)
+ #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"  // nogncheck
+ #endif
+ 
+ using content::GlobalRequestID;
+ using content::NavigationController;
+@@ -28,11 +28,11 @@ using content::WebContents;
+ #if BUILDFLAG(IS_ANDROID)
+ NavigateParams::NavigateParams(std::unique_ptr<WebContents> contents_to_insert)
+     : contents_to_insert(std::move(contents_to_insert)) {}
+ #endif
+ 
+-#if !BUILDFLAG(IS_ANDROID) || BUILDFLAG(IS_DESKTOP_ANDROID)
++#if !BUILDFLAG(IS_ANDROID) || BUILDFLAG(IS_DESKTOP_ANDROID_VANADIUM)
+ NavigateParams::NavigateParams(BrowserWindowInterface* a_browser,
+                                const GURL& a_url,
+                                ui::PageTransition a_transition)
+     : url(a_url), transition(a_transition), browser(a_browser) {}
+ 
+diff --git a/chrome/browser/ui/browser_navigator_params.h b/chrome/browser/ui/browser_navigator_params.h
+index 88e9f20fb8eb5..e3ecbcd328448 100644
+--- a/chrome/browser/ui/browser_navigator_params.h
++++ b/chrome/browser/ui/browser_navigator_params.h
+@@ -74,11 +74,11 @@ struct NavigateParams {
+ #if BUILDFLAG(IS_ANDROID)
+   explicit NavigateParams(
+       std::unique_ptr<content::WebContents> contents_to_insert);
+ #endif
+ 
+-#if !BUILDFLAG(IS_ANDROID) || BUILDFLAG(IS_DESKTOP_ANDROID)
++#if !BUILDFLAG(IS_ANDROID) || BUILDFLAG(IS_DESKTOP_ANDROID_VANADIUM)
+   NavigateParams(BrowserWindowInterface* a_browser,
+                  const GURL& a_url,
+                  ui::PageTransition a_transition);
+   NavigateParams(BrowserWindowInterface* a_browser,
+                  std::unique_ptr<content::WebContents> contents_to_insert);
+@@ -261,11 +261,11 @@ struct NavigateParams {
+     // Ignore path when finding existing tab, navigate to new URL.
+     IGNORE_AND_NAVIGATE,
+   };
+   PathBehavior path_behavior = RESPECT;
+ 
+-#if !BUILDFLAG(IS_ANDROID) || BUILDFLAG(IS_DESKTOP_ANDROID)
++#if !BUILDFLAG(IS_ANDROID) || BUILDFLAG(IS_DESKTOP_ANDROID_VANADIUM)
+   // [in]  Specifies a BrowserWindowInterface object where the navigation
+   //       could occur or the tab could be added. Navigate() is not obliged to
+   //       use this BrowserWindowInterface if it is not compatible with the
+   //       operation being performed. This can be NULL, in which case
+   //       |initiating_profile| must be provided.
+diff --git a/chrome/browser/ui/prefs/prefs_tab_helper.cc b/chrome/browser/ui/prefs/prefs_tab_helper.cc
+index 1c62f31a540bd..e45568e57344c 100644
+--- a/chrome/browser/ui/prefs/prefs_tab_helper.cc
++++ b/chrome/browser/ui/prefs/prefs_tab_helper.cc
+@@ -63,11 +63,11 @@
+ #if BUILDFLAG(IS_WIN)
+ #include <windows.h>
+ #endif
+ 
+ #if BUILDFLAG(IS_MAC) || BUILDFLAG(IS_WIN) || BUILDFLAG(IS_LINUX) || \
+-    BUILDFLAG(IS_ANDROID) || BUILDFLAG(ENABLE_DESKTOP_ANDROID_EXTENSIONS)
++    BUILDFLAG(IS_ANDROID) || BUILDFLAG(ENABLE_DESKTOP_ANDROID_EXTENSIONS_VANADIUM)
+ // If a font name in prefs default values starts with a comma, consider it's a
+ // comma-separated font list and resolve it to the first available font.
+ #define PREFS_FONT_LIST 1
+ #include "ui/gfx/font_list.h"
+ #else
+@@ -77,11 +77,11 @@
+ using blink::web_pref::WebPreferences;
+ using content::WebContents;
+ 
+ namespace {
+ 
+-#if !BUILDFLAG(IS_ANDROID) || BUILDFLAG(ENABLE_DESKTOP_ANDROID_EXTENSIONS)
++#if !BUILDFLAG(IS_ANDROID) || BUILDFLAG(ENABLE_DESKTOP_ANDROID_EXTENSIONS_VANADIUM)
+ // Registers a preference under the path |pref_name| for each script used for
+ // per-script font prefs.
+ // For example, for WEBKIT_WEBPREFS_FONTS_SERIF ("fonts.serif"):
+ // "fonts.serif.Arab", "fonts.serif.Hang", etc. are registered.
+ // |fonts_with_defaults| contains all |pref_names| already registered since they
+@@ -150,11 +150,11 @@ constexpr auto kFontDefaults = std::to_array<FontDefault>({
+     {prefs::kWebKitSansSerifFontFamily, IDS_SANS_SERIF_FONT_FAMILY},
+     {prefs::kWebKitCursiveFontFamily, IDS_CURSIVE_FONT_FAMILY},
+     {prefs::kWebKitFantasyFontFamily, IDS_FANTASY_FONT_FAMILY},
+     {prefs::kWebKitMathFontFamily, IDS_MATH_FONT_FAMILY},
+ #if BUILDFLAG(IS_CHROMEOS) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_WIN) || \
+-    BUILDFLAG(ENABLE_DESKTOP_ANDROID_EXTENSIONS)
++    BUILDFLAG(ENABLE_DESKTOP_ANDROID_EXTENSIONS_VANADIUM)
+     {prefs::kWebKitStandardFontFamilyJapanese,
+      IDS_STANDARD_FONT_FAMILY_JAPANESE},
+     {prefs::kWebKitFixedFontFamilyJapanese, IDS_FIXED_FONT_FAMILY_JAPANESE},
+     {prefs::kWebKitSerifFontFamilyJapanese, IDS_SERIF_FONT_FAMILY_JAPANESE},
+     {prefs::kWebKitSansSerifFontFamilyJapanese,
+@@ -289,11 +289,11 @@ void OverrideFontFamily(blink::web_pref::WebPreferences* prefs,
+     NOTREACHED() << "Unknown generic font family: " << generic_family;
+   }
+   (*map)[script] = base::UTF8ToUTF16(pref_value);
+ }
+ 
+-#if !BUILDFLAG(IS_ANDROID) || BUILDFLAG(ENABLE_DESKTOP_ANDROID_EXTENSIONS)
++#if !BUILDFLAG(IS_ANDROID) || BUILDFLAG(ENABLE_DESKTOP_ANDROID_EXTENSIONS_VANADIUM)
+ void RegisterLocalizedFontPref(user_prefs::PrefRegistrySyncable* registry,
+                                const char* path,
+                                int default_message_id) {
+   int val = 0;
+   bool success =
+@@ -448,11 +448,11 @@ void PrefsTabHelper::RegisterProfilePrefs(
+       fonts_with_defaults.insert(pref.pref_name);
+     }
+   }
+ 
+ // Register font prefs.  This is only configurable on desktop Chrome.
+-#if !BUILDFLAG(IS_ANDROID) || BUILDFLAG(ENABLE_DESKTOP_ANDROID_EXTENSIONS)
++#if !BUILDFLAG(IS_ANDROID) || BUILDFLAG(ENABLE_DESKTOP_ANDROID_EXTENSIONS_VANADIUM)
+   RegisterFontFamilyPrefs(registry, fonts_with_defaults);
+ 
+   registry->RegisterIntegerPref(prefs::kWebKitDefaultFontSize, 16);
+   registry->RegisterIntegerPref(prefs::kWebKitDefaultFixedFontSize, 13);
+   registry->RegisterIntegerPref(prefs::kWebKitMinimumFontSize, 0);
+diff --git a/chrome/browser/ui/prefs/prefs_tab_helper_browsertest.cc b/chrome/browser/ui/prefs/prefs_tab_helper_browsertest.cc
+index f3fce1f8f0bdc..c25bbf452c34a 100644
+--- a/chrome/browser/ui/prefs/prefs_tab_helper_browsertest.cc
++++ b/chrome/browser/ui/prefs/prefs_tab_helper_browsertest.cc
+@@ -89,11 +89,11 @@ IN_PROC_BROWSER_TEST_F(PrefsTabHelperBrowserTest, WebPrefs) {
+ 
+ // Tests that changes in browser preferences are reflected in Blink's web
+ // preferences. Note that these preferences are not handled on non-desktop
+ // Android, see http://crbug.com/308033, but can be modified by extension APIs
+ // on desktop Android.
+-#if !BUILDFLAG(IS_ANDROID) || BUILDFLAG(ENABLE_DESKTOP_ANDROID_EXTENSIONS)
++#if !BUILDFLAG(IS_ANDROID) || BUILDFLAG(ENABLE_DESKTOP_ANDROID_EXTENSIONS_VANADIUM)
+ IN_PROC_BROWSER_TEST_F(PrefsTabHelperBrowserTest, GenericFontFamilies) {
+   PrefService* prefs = chrome_test_utils::GetProfile(this)->GetPrefs();
+   prefs->SetString(prefs::kWebKitStandardFontFamily, "CustomStandard");
+   prefs->SetString(prefs::kWebKitSerifFontFamily, "CustomSerif");
+   prefs->SetString(prefs::kWebKitSansSerifFontFamily, "CustomSansSerif");
+diff --git a/chrome/browser/ui/tabs/tab_list_interface.h b/chrome/browser/ui/tabs/tab_list_interface.h
+index bd77e76278e4c..75e1f7325cd5f 100644
+--- a/chrome/browser/ui/tabs/tab_list_interface.h
++++ b/chrome/browser/ui/tabs/tab_list_interface.h
+@@ -16,11 +16,11 @@
+ #include "components/tabs/public/tab_interface.h"
+ #include "url/gurl.h"
+ 
+ // BrowserWindowInterface is available on desktop Android, but not other Android
+ // builds.
+-#if !BUILDFLAG(IS_ANDROID) || BUILDFLAG(IS_DESKTOP_ANDROID)
++#if !BUILDFLAG(IS_ANDROID) || BUILDFLAG(IS_DESKTOP_ANDROID_VANADIUM)
+ class BrowserWindowInterface;
+ #endif
+ 
+ class SessionID;
+ class TabListInterfaceObserver;
+@@ -33,11 +33,11 @@ class TabListInterface {
+   virtual ~TabListInterface() = default;
+ 
+   TabListInterface(const TabListInterface& other) = delete;
+   void operator=(const TabListInterface& other) = delete;
+ 
+-#if !BUILDFLAG(IS_ANDROID) || BUILDFLAG(IS_DESKTOP_ANDROID)
++#if !BUILDFLAG(IS_ANDROID) || BUILDFLAG(IS_DESKTOP_ANDROID_VANADIUM)
+   // Returns the TabListInterface associated with the given `browser`.
+   static TabListInterface* From(BrowserWindowInterface* browser);
+ #endif
+ 
+   // Adds / removes observers from this tab list.
+diff --git a/chrome/browser/ui/webui/chrome_web_ui_configs.cc b/chrome/browser/ui/webui/chrome_web_ui_configs.cc
+index d185bfdfbb3c7..b9912e69c31de 100644
+--- a/chrome/browser/ui/webui/chrome_web_ui_configs.cc
++++ b/chrome/browser/ui/webui/chrome_web_ui_configs.cc
+@@ -168,14 +168,14 @@
+ #include "chrome/browser/ui/webui/sandbox/sandbox_internals_ui.h"
+ #endif  // BUILDFLAG(IS_WIN) || BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_CHROMEOS) ||
+         // BUILDFLAG(IS_ANDROID)
+ 
+ #if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX) || \
+-    BUILDFLAG(IS_CHROMEOS) || BUILDFLAG(IS_DESKTOP_ANDROID)
++    BUILDFLAG(IS_CHROMEOS) || BUILDFLAG(IS_DESKTOP_ANDROID_VANADIUM)
+ #include "chrome/browser/ui/webui/discards/discards_ui.h"
+ #endif  // BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX) ||
+-        // BUILDFLAG(IS_CHROMEOS) || BUILDFLAG(IS_DESKTOP_ANDROID)
++        // BUILDFLAG(IS_CHROMEOS) || BUILDFLAG(IS_DESKTOP_ANDROID_VANADIUM)
+ 
+ #if BUILDFLAG(IS_MAC) || BUILDFLAG(IS_WIN)
+ #include "chrome/browser/ui/webui/updater/updater_ui.h"
+ #endif  // BUILDFLAG(IS_MAC) || BUILDFLAG(IS_WIN)
+ 
+@@ -402,14 +402,14 @@ void RegisterChromeWebUIConfigs() {
+   map.AddWebUIConfig(std::make_unique<SandboxInternalsUIConfig>());
+ #endif  // BUILDFLAG(IS_WIN) || BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_CHROMEOS) ||
+         // BUILDFLAG(IS_ANDROID)
+ 
+ #if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX) || \
+-    BUILDFLAG(IS_CHROMEOS) || BUILDFLAG(IS_DESKTOP_ANDROID)
++    BUILDFLAG(IS_CHROMEOS) || BUILDFLAG(IS_DESKTOP_ANDROID_VANADIUM)
+   map.AddWebUIConfig(std::make_unique<DiscardsUIConfig>());
+ #endif  // BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX) ||
+-        // BUILDFLAG(IS_CHROMEOS) || BUILDFLAG(IS_DESKTOP_ANDROID)
++        // BUILDFLAG(IS_CHROMEOS) || BUILDFLAG(IS_DESKTOP_ANDROID_VANADIUM)
+ 
+ #if BUILDFLAG(IS_MAC) || BUILDFLAG(IS_WIN)
+   map.AddWebUIConfig(std::make_unique<UpdaterUIConfig>());
+ #endif  // BUILDFLAG(IS_MAC) || BUILDFLAG(IS_WIN)
+ 
+diff --git a/chrome/browser/ui/webui/discards/discards_ui.cc b/chrome/browser/ui/webui/discards/discards_ui.cc
+index 352b91a5f8645..9ca9e99f458da 100644
+--- a/chrome/browser/ui/webui/discards/discards_ui.cc
++++ b/chrome/browser/ui/webui/discards/discards_ui.cc
+@@ -58,16 +58,16 @@
+ #include "ui/resources/grit/ui_resources_map.h"
+ #include "ui/webui/webui_util.h"
+ #include "url/gurl.h"
+ #include "url/origin.h"
+ 
+-#if !BUILDFLAG(IS_DESKTOP_ANDROID)
++#if !BUILDFLAG(IS_DESKTOP_ANDROID_VANADIUM)
+ #include "chrome/browser/resource_coordinator/lifecycle_unit.h"
+ #include "chrome/browser/resource_coordinator/lifecycle_unit_state.mojom.h"
+ #include "chrome/browser/resource_coordinator/tab_lifecycle_unit.h"
+ #include "chrome/browser/resource_coordinator/tab_lifecycle_unit_external.h"
+-#endif  // !BUILDFLAG(IS_DESKTOP_ANDROID)
++#endif  // !BUILDFLAG(IS_DESKTOP_ANDROID_VANADIUM)
+ 
+ using performance_manager::PageNode;
+ using performance_manager::policies::DiscardEligibilityPolicy;
+ 
+ namespace {
+@@ -238,11 +238,11 @@ class DiscardsDetailsProviderImpl
+         info->is_auto_discardable = live_state_data->IsAutoDiscardable();
+       }
+       info->site_engagement_score = GetSiteEngagementScore(contents);
+       info->has_focus = page_node->IsFocused();
+ 
+-#if !BUILDFLAG(IS_DESKTOP_ANDROID)
++#if !BUILDFLAG(IS_DESKTOP_ANDROID_VANADIUM)
+       auto* lifecycle_unit_external = resource_coordinator::
+           TabLifecycleUnitSource::GetTabLifecycleUnitExternal(contents);
+       // A TabLifecycleUnitExternal object is always a TabLifecycleUnit object.
+       // TabLifecycleUnit will be removed (crbug.com/394889323).
+       resource_coordinator::TabLifecycleUnitSource::TabLifecycleUnit*
+@@ -261,11 +261,11 @@ class DiscardsDetailsProviderImpl
+                 : (resource_coordinator::NowTicks() - last_focused_time);
+         info->last_active_seconds = static_cast<int32_t>(elapsed.InSeconds());
+         info->state_change_time =
+             lifecycle_unit->GetStateChangeTime() - base::TimeTicks::UnixEpoch();
+       }
+-#endif  // !BUILDFLAG(IS_DESKTOP_ANDROID)
++#endif  // !BUILDFLAG(IS_DESKTOP_ANDROID_VANADIUM)
+ 
+       infos.push_back(std::move(info));
+     }
+ 
+     std::move(callback).Run(std::move(infos));
+@@ -351,14 +351,14 @@ class DiscardsDetailsProviderImpl
+                              : performance_manager::user_tuning::prefs::
+                                    BatterySaverModeState::kDisabled));
+   }
+ 
+   void RefreshPerformanceTabCpuMeasurements() override {
+-#if !BUILDFLAG(IS_DESKTOP_ANDROID)
++#if !BUILDFLAG(IS_DESKTOP_ANDROID_VANADIUM)
+     performance_manager::user_tuning::PerformanceDetectionManager::GetInstance()
+         ->ForceTabCpuDataRefresh();
+-#endif  // !BUILDFLAG(IS_DESKTOP_ANDROID)
++#endif  // !BUILDFLAG(IS_DESKTOP_ANDROID_VANADIUM)
+   }
+ 
+  private:
+   mojo::Receiver<discards::mojom::DetailsProvider> receiver_;
+ 
+@@ -373,14 +373,14 @@ DiscardsUI::DiscardsUI(content::WebUI* web_ui)
+   Profile* profile = Profile::FromWebUI(web_ui);
+   content::WebUIDataSource* source = content::WebUIDataSource::CreateAndAdd(
+       profile, chrome::kChromeUIDiscardsHost);
+ 
+   bool demoModeEnabled = false;
+-#if !BUILDFLAG(IS_DESKTOP_ANDROID)
++#if !BUILDFLAG(IS_DESKTOP_ANDROID_VANADIUM)
+   demoModeEnabled = base::FeatureList::IsEnabled(
+       performance_manager::features::kPerformanceInterventionDemoMode);
+-#endif  // !BUILDFLAG(IS_DESKTOP_ANDROID)
++#endif  // !BUILDFLAG(IS_DESKTOP_ANDROID_VANADIUM)
+   source->AddBoolean("isPerformanceInterventionDemoModeEnabled",
+                      demoModeEnabled);
+ 
+   webui::SetupWebUIDataSource(source, kDiscardsResources,
+                               IDR_DISCARDS_DISCARDS_HTML);
+diff --git a/chrome/browser/ui/webui/favicon_source.cc b/chrome/browser/ui/webui/favicon_source.cc
+index fc4e996865d7a..76849dbd3f734 100644
+--- a/chrome/browser/ui/webui/favicon_source.cc
++++ b/chrome/browser/ui/webui/favicon_source.cc
+@@ -25,10 +25,11 @@
+ #include "third_party/skia/include/core/SkBitmap.h"
+ #include "ui/base/resource/resource_bundle.h"
+ #include "ui/base/resource/resource_scale_factor.h"
+ #include "ui/base/webui/web_ui_util.h"
+ #include "ui/gfx/codec/png_codec.h"
++#include "build/build_config.h"
+ #include "ui/native_theme/native_theme.h"
+ #include "ui/resources/grit/ui_resources.h"
+ #include "url/gurl.h"
+ 
+ #if !BUILDFLAG(IS_ANDROID)
+@@ -306,10 +307,14 @@ void FaviconSource::SendDefaultResponse(
+     std::move(callback).Run(nullptr);
+     return;
+   }
+ 
+   int resource_id;
++#if BUILDFLAG(IS_ANDROID)
++  // Only base favicon available on Android (32/64 sizes require is_desktop_android)
++  resource_id = dark_mode ? IDR_DEFAULT_FAVICON_DARK : IDR_DEFAULT_FAVICON;
++#else
+   switch (size_in_dip) {
+     case 64:
+       resource_id =
+           dark_mode ? IDR_DEFAULT_FAVICON_DARK_64 : IDR_DEFAULT_FAVICON_64;
+       break;
+@@ -319,10 +324,11 @@ void FaviconSource::SendDefaultResponse(
+       break;
+     default:
+       resource_id = dark_mode ? IDR_DEFAULT_FAVICON_DARK : IDR_DEFAULT_FAVICON;
+       break;
+   }
++#endif  // BUILDFLAG(IS_ANDROID)
+   std::move(callback).Run(LoadIconBytes(scale_factor, resource_id));
+ }
+ 
+ base::RefCountedMemory* FaviconSource::LoadIconBytes(float scale_factor,
+                                                      int resource_id) {
+diff --git a/chrome/browser/ui/webui/policy/policy_ui_browsertest.cc b/chrome/browser/ui/webui/policy/policy_ui_browsertest.cc
+index 7aa629d8452d4..cee6210f0c083 100644
+--- a/chrome/browser/ui/webui/policy/policy_ui_browsertest.cc
++++ b/chrome/browser/ui/webui/policy/policy_ui_browsertest.cc
+@@ -549,11 +549,11 @@ IN_PROC_BROWSER_TEST_F(PolicyUITest, SendPolicyNames) {
+   // matches the expectation.
+   VerifyPolicies(expected_policies);
+ }
+ 
+ // TODO(crbug.com/384989795): Fails on desktop android, see bug.
+-#if BUILDFLAG(IS_DESKTOP_ANDROID)
++#if BUILDFLAG(IS_DESKTOP_ANDROID_VANADIUM)
+ #define MAYBE_SendPolicyValues DISABLED_SendPolicyValues
+ #else
+ #define MAYBE_SendPolicyValues SendPolicyValues
+ #endif
+ IN_PROC_BROWSER_TEST_F(PolicyUITest, MAYBE_SendPolicyValues) {
+diff --git a/chrome/common/chrome_switches.cc b/chrome/common/chrome_switches.cc
+index ec68419022e14..7038331e4dca3 100644
+--- a/chrome/common/chrome_switches.cc
++++ b/chrome/common/chrome_switches.cc
+@@ -800,11 +800,11 @@ const char kMarketUrlForTesting[] = "market-url-for-testing";
+ 
+ // Force enable user agent overrides to request desktop sites in Clank.
+ const char kRequestDesktopSites[] = "request-desktop-sites";
+ #endif  // BUILDFLAG(IS_ANDROID)
+ 
+-#if !BUILDFLAG(IS_ANDROID) || BUILDFLAG(ENABLE_DESKTOP_ANDROID_EXTENSIONS)
++#if !BUILDFLAG(IS_ANDROID) || BUILDFLAG(ENABLE_DESKTOP_ANDROID_EXTENSIONS_VANADIUM)
+ // If enabled, overrides the target playout delay for a casting mirroring
+ // session. The value will be parsed as milliseconds. Lowering this value will
+ // result in a lower end to end latency, but could come at the cost of other
+ // quality standards such as dropped frames or FPS.
+ const char kCastMirroringTargetPlayoutDelay[] =
+diff --git a/chrome/common/chrome_switches.h b/chrome/common/chrome_switches.h
+index 3acc0029265b0..602e96a9e62ad 100644
+--- a/chrome/common/chrome_switches.h
++++ b/chrome/common/chrome_switches.h
+@@ -236,11 +236,11 @@ extern const char kForceDisableSigninFRE[];
+ extern const char kForceUpdateMenuType[];
+ extern const char kMarketUrlForTesting[];
+ extern const char kRequestDesktopSites[];
+ #endif  // BUILDFLAG(IS_ANDROID)
+ 
+-#if !BUILDFLAG(IS_ANDROID) || BUILDFLAG(ENABLE_DESKTOP_ANDROID_EXTENSIONS)
++#if !BUILDFLAG(IS_ANDROID) || BUILDFLAG(ENABLE_DESKTOP_ANDROID_EXTENSIONS_VANADIUM)
+ extern const char kCastMirroringTargetPlayoutDelay[];
+ #endif
+ 
+ #if BUILDFLAG(IS_CHROMEOS)
+ extern const char kCroshCommand[];
+diff --git a/chrome/common/webui_url_constants.cc b/chrome/common/webui_url_constants.cc
+index f96fccfbc248a..da661bf1e694e 100644
+--- a/chrome/common/webui_url_constants.cc
++++ b/chrome/common/webui_url_constants.cc
+@@ -203,11 +203,11 @@ base::span<const base::cstring_view> ChromeURLHosts() {
+       kChromeUISysInternalsHost,
+       kChromeUIInternetConfigDialogHost,
+       kChromeUIInternetDetailDialogHost,
+ #endif
+ #if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX) || \
+-    BUILDFLAG(IS_CHROMEOS) || BUILDFLAG(IS_DESKTOP_ANDROID)
++    BUILDFLAG(IS_CHROMEOS) || BUILDFLAG(IS_DESKTOP_ANDROID_VANADIUM)
+       kChromeUIDiscardsHost,
+ #endif
+ #if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX)
+       kChromeUIWebAppSettingsHost,
+ #endif
+diff --git a/chrome/common/webui_url_constants.h b/chrome/common/webui_url_constants.h
+index a134c1e4b0242..42ba618bfd6f0 100644
+--- a/chrome/common/webui_url_constants.h
++++ b/chrome/common/webui_url_constants.h
+@@ -562,11 +562,11 @@ inline constexpr char kChromeUIOSSettingsHost[] = "os-settings";
+ inline constexpr char kChromeUIOSSettingsURL[] = "chrome://os-settings/";
+ inline constexpr char kChromeUIOsUrlAppURL[] = "chrome://internal/";
+ #endif  // BUILDFLAG(IS_CHROMEOS)
+ 
+ #if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX) || \
+-    BUILDFLAG(IS_CHROMEOS) || BUILDFLAG(IS_DESKTOP_ANDROID)
++    BUILDFLAG(IS_CHROMEOS) || BUILDFLAG(IS_DESKTOP_ANDROID_VANADIUM)
+ inline constexpr char kChromeUIDiscardsHost[] = "discards";
+ inline constexpr char kChromeUIDiscardsURL[] = "chrome://discards/";
+ #endif
+ 
+ #if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX)
+diff --git a/components/media_router/browser/android/media_router_android.cc b/components/media_router/browser/android/media_router_android.cc
+index b9dd811427e44..0ab5cda2ef85c 100644
+--- a/components/media_router/browser/android/media_router_android.cc
++++ b/components/media_router/browser/android/media_router_android.cc
+@@ -375,11 +375,11 @@ void MediaRouterAndroid::RemoveRoute(const MediaRoute::Id& route_id) {
+ std::unique_ptr<media::FlingingController>
+ MediaRouterAndroid::GetFlingingController(const MediaRoute::Id& route_id) {
+   return bridge_->GetFlingingController(route_id);
+ }
+ 
+-#if BUILDFLAG(ENABLE_DESKTOP_ANDROID_EXTENSIONS)
++#if BUILDFLAG(ENABLE_DESKTOP_ANDROID_EXTENSIONS_VANADIUM)
+ MirroringMediaControllerHost*
+ MediaRouterAndroid::GetMirroringMediaControllerHost(
+     const MediaRoute::Id& route_id) {
+   NOTIMPLEMENTED();
+   return nullptr;
+@@ -419,11 +419,11 @@ LoggerImpl* MediaRouterAndroid::GetLogger() {
+ 
+ MediaRouterDebugger& MediaRouterAndroid::GetDebugger() {
+   // Nothing sensible to return, just crash.
+   NOTREACHED();
+ }
+-#endif  // BUILDFLAG(ENABLE_DESKTOP_ANDROID_EXTENSIONS)
++#endif  // BUILDFLAG(ENABLE_DESKTOP_ANDROID_EXTENSIONS_VANADIUM)
+ 
+ void MediaRouterAndroid::OnPresentationConnectionError(
+     const std::string& route_id) {
+   presentation_connections_.erase(route_id);
+ }
+diff --git a/components/media_router/browser/android/media_router_android.h b/components/media_router/browser/android/media_router_android.h
+index 8aff0f3ae123a..b6cb75e7f33c0 100644
+--- a/components/media_router/browser/android/media_router_android.h
++++ b/components/media_router/browser/android/media_router_android.h
+@@ -54,11 +54,11 @@ class MediaRouterAndroid : public MediaRouterBase {
+   void OnUserGesture() override;
+   std::vector<MediaRoute> GetCurrentRoutes() const override;
+   std::unique_ptr<media::FlingingController> GetFlingingController(
+       const MediaRoute::Id& route_id) override;
+ 
+-#if BUILDFLAG(ENABLE_DESKTOP_ANDROID_EXTENSIONS)
++#if BUILDFLAG(ENABLE_DESKTOP_ANDROID_EXTENSIONS_VANADIUM)
+   MirroringMediaControllerHost* GetMirroringMediaControllerHost(
+       const MediaRoute::Id& route_id) override;
+   IssueManager* GetIssueManager() override;
+   void GetMediaController(
+       const MediaRoute::Id& route_id,
+@@ -69,11 +69,11 @@ class MediaRouterAndroid : public MediaRouterBase {
+   void GetProviderState(
+       mojom::MediaRouteProviderId provider_id,
+       mojom::MediaRouteProvider::GetStateCallback callback) const override;
+   LoggerImpl* GetLogger() override;
+   MediaRouterDebugger& GetDebugger() override;
+-#endif  // BUILDFLAG(ENABLE_DESKTOP_ANDROID_EXTENSIONS)
++#endif  // BUILDFLAG(ENABLE_DESKTOP_ANDROID_EXTENSIONS_VANADIUM)
+ 
+   // The methods called by the Java bridge.
+   // Notifies the media router that information about sinks is received for
+   // a specific source id.
+   void OnSinksReceived(const MediaSource::Id& source_id,
+diff --git a/components/media_router/browser/media_router.h b/components/media_router/browser/media_router.h
+index 1c497f548d97a..d53cff077303d 100644
+--- a/components/media_router/browser/media_router.h
++++ b/components/media_router/browser/media_router.h
+@@ -27,11 +27,11 @@
+ #include "content/public/browser/presentation_service_delegate.h"
+ #include "extensions/buildflags/buildflags.h"
+ #include "media/base/flinging_controller.h"
+ #include "third_party/blink/public/mojom/presentation/presentation.mojom.h"
+ 
+-#if !BUILDFLAG(IS_ANDROID) || BUILDFLAG(ENABLE_DESKTOP_ANDROID_EXTENSIONS)
++#if !BUILDFLAG(IS_ANDROID) || BUILDFLAG(ENABLE_DESKTOP_ANDROID_EXTENSIONS_VANADIUM)
+ #include "components/media_router/browser/logger_impl.h"
+ #include "components/media_router/browser/media_router_debugger.h"
+ #include "components/media_router/common/mojom/media_controller.mojom.h"
+ #include "mojo/public/cpp/bindings/pending_receiver.h"
+ #include "mojo/public/cpp/bindings/pending_remote.h"
+@@ -153,11 +153,11 @@ class MediaRouter : public KeyedService {
+   // propagates MediaStatus changes.
+   // Returns a nullptr if no controller can be be found from |route_id|.
+   virtual std::unique_ptr<media::FlingingController> GetFlingingController(
+       const MediaRoute::Id& route_id) = 0;
+ 
+-#if !BUILDFLAG(IS_ANDROID) || BUILDFLAG(ENABLE_DESKTOP_ANDROID_EXTENSIONS)
++#if !BUILDFLAG(IS_ANDROID) || BUILDFLAG(ENABLE_DESKTOP_ANDROID_EXTENSIONS_VANADIUM)
+   // Returns a pointer to a controller host that sends media commands related to
+   // mirroring within a route.
+   virtual MirroringMediaControllerHost* GetMirroringMediaControllerHost(
+       const MediaRoute::Id& route_id) = 0;
+ 
+diff --git a/components/media_router/browser/test/mock_media_router.h b/components/media_router/browser/test/mock_media_router.h
+index 75fddc3bb6db2..e63af385354cb 100644
+--- a/components/media_router/browser/test/mock_media_router.h
++++ b/components/media_router/browser/test/mock_media_router.h
+@@ -24,11 +24,11 @@
+ #include "mojo/public/cpp/bindings/pending_receiver.h"
+ #include "mojo/public/cpp/bindings/pending_remote.h"
+ #include "testing/gmock/include/gmock/gmock.h"
+ #include "url/origin.h"
+ 
+-#if !BUILDFLAG(IS_ANDROID) || BUILDFLAG(ENABLE_DESKTOP_ANDROID_EXTENSIONS)
++#if !BUILDFLAG(IS_ANDROID) || BUILDFLAG(ENABLE_DESKTOP_ANDROID_EXTENSIONS_VANADIUM)
+ #include "components/media_router/browser/issue_manager.h"
+ #endif
+ 
+ namespace content {
+ class BrowserContext;
+@@ -106,11 +106,11 @@ class MockMediaRouter : public MediaRouterBase {
+   MOCK_CONST_METHOD0(GetCurrentRoutes, std::vector<MediaRoute>());
+   MOCK_METHOD1(GetFlingingController,
+                std::unique_ptr<media::FlingingController>(
+                    const MediaRoute::Id& route_id));
+ 
+-#if !BUILDFLAG(IS_ANDROID) || BUILDFLAG(ENABLE_DESKTOP_ANDROID_EXTENSIONS)
++#if !BUILDFLAG(IS_ANDROID) || BUILDFLAG(ENABLE_DESKTOP_ANDROID_EXTENSIONS_VANADIUM)
+   MOCK_METHOD1(GetMirroringMediaControllerHost,
+                MirroringMediaControllerHost*(const MediaRoute::Id& route_id));
+   IssueManager* GetIssueManager() override { return &issue_manager_; }
+   MOCK_METHOD3(GetMediaController,
+                void(const MediaRoute::Id& route_id,
+@@ -150,11 +150,11 @@ class MockMediaRouter : public MediaRouterBase {
+ 
+  protected:
+   base::ObserverList<MediaRoutesObserver> routes_observers_;
+ 
+  private:
+-#if !BUILDFLAG(IS_ANDROID) || BUILDFLAG(ENABLE_DESKTOP_ANDROID_EXTENSIONS)
++#if !BUILDFLAG(IS_ANDROID) || BUILDFLAG(ENABLE_DESKTOP_ANDROID_EXTENSIONS_VANADIUM)
+   IssueManager issue_manager_;
+ #endif
+ };
+ 
+ }  // namespace media_router
+diff --git a/components/policy/core/browser/configuration_policy_handler_list.cc b/components/policy/core/browser/configuration_policy_handler_list.cc
+index 1667f8e356ae1..bd9e5bcdbd546 100644
+--- a/components/policy/core/browser/configuration_policy_handler_list.cc
++++ b/components/policy/core/browser/configuration_policy_handler_list.cc
+@@ -142,16 +142,16 @@ bool ConfigurationPolicyHandlerList::IsBlockedPlatformDevicePolicy(
+ 
+ bool ConfigurationPolicyHandlerList::IsBlockedFuturePolicy(
+     const base::flat_set<std::string>& future_policies_allowed,
+     const PolicyDetails& policy_details,
+     PolicyMap::const_reference entry) const {
+-#if BUILDFLAG(IS_DESKTOP_ANDROID)
++#if BUILDFLAG(IS_DESKTOP_ANDROID_VANADIUM)
+   if (base::FeatureList::IsEnabled(features::kFuturePoliciesOnDesktopAndroid) &&
+       policy_details.is_future) {
+     return false;
+   }
+-#endif  // BUILDFLAG(IS_DESKTOP_ANDROID)
++#endif  // BUILDFLAG(IS_DESKTOP_ANDROID_VANADIUM)
+ 
+   return !are_future_policies_allowed_by_default_ && policy_details.is_future &&
+          !future_policies_allowed.contains(entry.first);
+ }
+ 
+diff --git a/components/policy/core/browser/configuration_policy_handler_list_unittest.cc b/components/policy/core/browser/configuration_policy_handler_list_unittest.cc
+index dc4169910a067..0f65766073d36 100644
+--- a/components/policy/core/browser/configuration_policy_handler_list_unittest.cc
++++ b/components/policy/core/browser/configuration_policy_handler_list_unittest.cc
+@@ -152,19 +152,19 @@ TEST_F(ConfigurationPolicyHandlerListTest, ApplySettingsWithFuturePolicy) {
+   ApplySettings();
+ 
+   VerifyPolicyAndPref(kPolicyName, /*in_pref=*/false,
+                       /*in_deprecated=*/false, /*in_future=*/true);
+ 
+-#if BUILDFLAG(IS_DESKTOP_ANDROID)
++#if BUILDFLAG(IS_DESKTOP_ANDROID_VANADIUM)
+   // Future policy will not be filtered out if kFuturePoliciesOnDesktopAndroid
+   // is enabled (for Desktop Android dogfooders, see
+   // https://crbug.com/452666657).
+   base::test::ScopedFeatureList feature_list;
+   feature_list.InitAndEnableFeature(features::kFuturePoliciesOnDesktopAndroid);
+ 
+   VerifyPolicyAndPref(kPolicyName, /*in_pref=*/true);
+-#endif  // BUILDFLAG(IS_DESKTOP_ANDROID)
++#endif  // BUILDFLAG(IS_DESKTOP_ANDROID_VANADIUM)
+ 
+   // Whitelist a different policy.
+   base::Value::List enabled_future_policies;
+   enabled_future_policies.Append(kPolicyName2);
+   AddPolicy(key::kEnableExperimentalPolicies, /*is_cloud=*/true,
+diff --git a/components/policy/core/browser/policy_pref_mapping_test.cc b/components/policy/core/browser/policy_pref_mapping_test.cc
+index 6a2b5f32c0488..b5d5be11c9fed 100644
+--- a/components/policy/core/browser/policy_pref_mapping_test.cc
++++ b/components/policy/core/browser/policy_pref_mapping_test.cc
+@@ -420,11 +420,11 @@ class PolicyTestCase {
+   bool has_reason_for_missing_test() const {
+     return has_reason_for_missing_test_;
+   }
+ 
+   bool IsOsSupported() const {
+-#if BUILDFLAG(IS_DESKTOP_ANDROID)
++#if BUILDFLAG(IS_DESKTOP_ANDROID_VANADIUM)
+     // For prefs testing desktop Android is considered a separate OS because it
+     // registers some additional prefs (e.g. extensions prefs).
+     const std::string os("desktop_android");
+ #elif BUILDFLAG(IS_ANDROID)
+     const std::string os("android");
+diff --git a/components/policy/core/common/features.cc b/components/policy/core/common/features.cc
+index 80a65783814fd..be6ada4711f82 100644
+--- a/components/policy/core/common/features.cc
++++ b/components/policy/core/common/features.cc
+@@ -38,14 +38,14 @@ const base::FeatureParam<base::TimeDelta> kPolicyRegistrationDelay{
+ // Used to add a captive portal check in SafeSitesNavigationThrottle.
+ BASE_FEATURE(kSafeSitesCaptivePortalCheck, base::FEATURE_ENABLED_BY_DEFAULT);
+ 
+ // TODO(https://crbug.com/452666657): Remove this feature flag after launching
+ // policies to supported on Android Desktop.
+-#if BUILDFLAG(IS_DESKTOP_ANDROID)
++#if BUILDFLAG(IS_DESKTOP_ANDROID_VANADIUM)
+ BASE_FEATURE(kFuturePoliciesOnDesktopAndroid,
+              base::FEATURE_DISABLED_BY_DEFAULT);
+-#endif  // BUILDFLAG(IS_DESKTOP_ANDROID)
++#endif  // BUILDFLAG(IS_DESKTOP_ANDROID_VANADIUM)
+ 
+ // Used to enable extension install policy support.
+ BASE_FEATURE(kEnableExtensionInstallPolicyFetching,
+              base::FEATURE_DISABLED_BY_DEFAULT);
+ 
+diff --git a/components/policy/core/common/policy_merger.cc b/components/policy/core/common/policy_merger.cc
+index 9a12ad2735aaa..60d6df784fbea 100644
+--- a/components/policy/core/common/policy_merger.cc
++++ b/components/policy/core/common/policy_merger.cc
+@@ -19,22 +19,22 @@
+ namespace policy {
+ 
+ namespace {
+ 
+ #if !BUILDFLAG(IS_IOS) && !BUILDFLAG(IS_FUCHSIA) && (!BUILDFLAG(IS_ANDROID) || \
+-    BUILDFLAG(IS_DESKTOP_ANDROID))
++    BUILDFLAG(IS_DESKTOP_ANDROID_VANADIUM))
+ constexpr const char* kDictionaryPoliciesToMerge[] = {
+ #if BUILDFLAG(IS_CHROMEOS)
+     key::kExtensionSettings,       key::kDeviceLoginScreenPowerManagement,
+     key::kKeyPermissions,          key::kPowerManagementIdleSettings,
+     key::kScreenBrightnessPercent, key::kScreenLockDelays,
+ #else
+     key::kExtensionSettings,
+ #endif  //  BUILDFLAG(IS_CHROMEOS)
+ };
+ #endif  // !BUILDFLAG(IS_IOS) && !BUILDFLAG(IS_FUCHSIA) &&
+-        // (!BUILDFLAG(IS_ANDROID) || BUILDFLAG(IS_DESKTOP_ANDROID))
++        // (!BUILDFLAG(IS_ANDROID) || BUILDFLAG(IS_DESKTOP_ANDROID_VANADIUM))
+ 
+ }  // namespace
+ 
+ // static
+ bool PolicyMerger::EntriesCanBeMerged(
+@@ -188,11 +188,11 @@ void PolicyListMerger::DoMerge(PolicyMap::Entry* policy) const {
+ }
+ 
+ PolicyDictionaryMerger::PolicyDictionaryMerger(
+     base::flat_set<std::string> policies_to_merge)
+ #if BUILDFLAG(IS_IOS) || BUILDFLAG(IS_FUCHSIA) || \
+-    (BUILDFLAG(IS_ANDROID) && !BUILDFLAG(IS_DESKTOP_ANDROID))
++    (BUILDFLAG(IS_ANDROID) && !BUILDFLAG(IS_DESKTOP_ANDROID_VANADIUM))
+     : policies_to_merge_(std::move(policies_to_merge)){}
+ #else
+     : policies_to_merge_(std::move(policies_to_merge)),
+       allowed_policies_(std::begin(kDictionaryPoliciesToMerge),
+                         std::end(kDictionaryPoliciesToMerge)) {
+diff --git a/components/webapps/browser/installable/installable_icon_fetcher.cc b/components/webapps/browser/installable/installable_icon_fetcher.cc
+index 127f80a060932..87126467a844e 100644
+--- a/components/webapps/browser/installable/installable_icon_fetcher.cc
++++ b/components/webapps/browser/installable/installable_icon_fetcher.cc
+@@ -118,11 +118,11 @@ void ProcessFaviconInBackground(
+ 
+   ui_thread_task_runner->PostTask(
+       FROM_HERE, base::BindOnce(std::move(success_callback), decoded));
+ }
+ 
+-#if BUILDFLAG(IS_DESKTOP_ANDROID)
++#if BUILDFLAG(IS_DESKTOP_ANDROID_VANADIUM)
+ // Generates a homescreen icon for `page_url` and posts a task to invoke
+ // `callback` on `ui_thread_task_runner.`
+ void GenerateHomeScreenIconInBackground(
+     const GURL& page_url,
+     scoped_refptr<base::SequencedTaskRunner> ui_thread_task_runner,
+@@ -130,11 +130,11 @@ void GenerateHomeScreenIconInBackground(
+   SkBitmap bitmap =
+       WebappsIconUtils::GenerateHomeScreenIconInBackground(page_url);
+   ui_thread_task_runner->PostTask(
+       FROM_HERE, base::BindOnce(std::move(callback), page_url, bitmap));
+ }
+-#endif  // BUILDFLAG(IS_DESKTOP_ANDROID)
++#endif  // BUILDFLAG(IS_DESKTOP_ANDROID_VANADIUM)
+ 
+ }  // namespace
+ 
+ namespace test {
+ int g_minimum_favicon_size_for_testing = 0;
+@@ -251,11 +251,11 @@ void InstallableIconFetcher::OnIconFetched(const GURL& icon_url,
+   page_data_->OnPrimaryIconFetched(icon_url, purpose, bitmap);
+   std::move(finish_callback_).Run(InstallableStatusCode::NO_ERROR_DETECTED);
+ }
+ 
+ void InstallableIconFetcher::MaybeEndWithError(InstallableStatusCode code) {
+-#if BUILDFLAG(IS_DESKTOP_ANDROID)
++#if BUILDFLAG(IS_DESKTOP_ANDROID_VANADIUM)
+   // Desktop android will generate an icon if none is available.
+   base::ThreadPool::PostTask(
+       FROM_HERE,
+       {base::MayBlock(), base::TaskPriority::USER_VISIBLE,
+        base::TaskShutdownBehavior::SKIP_ON_SHUTDOWN},
+@@ -267,19 +267,19 @@ void InstallableIconFetcher::MaybeEndWithError(InstallableStatusCode code) {
+                          weak_ptr_factory_.GetWeakPtr())));
+   return;
+ #else
+   // Other platforms report an error if no icon is available.
+   EndWithError(code);
+-#endif  // BUILDFLAG(IS_DESKTOP_ANDROID)
++#endif  // BUILDFLAG(IS_DESKTOP_ANDROID_VANADIUM)
+ }
+ 
+ void InstallableIconFetcher::EndWithError(InstallableStatusCode code) {
+   page_data_->OnPrimaryIconFetchedError(code);
+   std::move(finish_callback_).Run(code);
+ }
+ 
+-#if BUILDFLAG(IS_DESKTOP_ANDROID)
++#if BUILDFLAG(IS_DESKTOP_ANDROID_VANADIUM)
+ void InstallableIconFetcher::OnHomeScreenIconGenerated(const GURL& page_url,
+                                                        const SkBitmap& bitmap) {
+   if (bitmap.drawsNothing()) {
+     EndWithError(InstallableStatusCode::NO_ACCEPTABLE_ICON);
+     return;
+diff --git a/components/webapps/browser/installable/installable_icon_fetcher.h b/components/webapps/browser/installable/installable_icon_fetcher.h
+index e774c4ff81a51..85beb24230424 100644
+--- a/components/webapps/browser/installable/installable_icon_fetcher.h
++++ b/components/webapps/browser/installable/installable_icon_fetcher.h
+@@ -66,11 +66,11 @@ class InstallableIconFetcher {
+   void MaybeEndWithError(InstallableStatusCode code);
+ 
+   // Ends the fetch with an error.
+   void EndWithError(InstallableStatusCode code);
+ 
+-#if BUILDFLAG(IS_DESKTOP_ANDROID)
++#if BUILDFLAG(IS_DESKTOP_ANDROID_VANADIUM)
+   void OnHomeScreenIconGenerated(const GURL& page_url, const SkBitmap& bitmap);
+ #endif
+ 
+   base::WeakPtr<content::WebContents> web_contents_;
+ 
+diff --git a/content/browser/browser_main_loop.cc b/content/browser/browser_main_loop.cc
+index a12778247beab..4802eb8efea27 100644
+--- a/content/browser/browser_main_loop.cc
++++ b/content/browser/browser_main_loop.cc
+@@ -849,11 +849,11 @@ int BrowserMainLoop::PreCreateThreads() {
+   // Record whether the current site isolation configuration is "Site Per
+   // Process" or a stricter mode, such as "Strict Origin Isolation."
+   base::UmaHistogramBoolean("SiteIsolation.IsSitePerProcessOrStricter",
+                             SiteIsolationPolicy::IsSitePerProcessOrStricter());
+ 
+-#if BUILDFLAG(IS_ANDROID) && BUILDFLAG(IS_DESKTOP_ANDROID)
++#if BUILDFLAG(IS_ANDROID) && BUILDFLAG(IS_DESKTOP_ANDROID_VANADIUM)
+   base::UmaHistogramBoolean(
+       "SiteIsolation.IsSitePerProcessOrStricter.AndroidDesktop",
+       SiteIsolationPolicy::IsSitePerProcessOrStricter());
+   base::UmaHistogramEnumeration(
+       "SiteIsolation.DisabledReason.AndroidDesktop",
+diff --git a/content/browser/renderer_host/media/video_capture_manager.cc b/content/browser/renderer_host/media/video_capture_manager.cc
+index fceb535c09295..fdd9c27ff7e10 100644
+--- a/content/browser/renderer_host/media/video_capture_manager.cc
++++ b/content/browser/renderer_host/media/video_capture_manager.cc
+@@ -119,11 +119,11 @@ void VideoCaptureManager::RemoveAllVideoCaptureObservers() {
+ void VideoCaptureManager::RegisterListener(
+     MediaStreamProviderListener* listener) {
+   DCHECK_CURRENTLY_ON(BrowserThread::IO);
+   DCHECK(listener);
+   listeners_.AddObserver(listener);
+-#if BUILDFLAG(IS_ANDROID) && !BUILDFLAG(IS_DESKTOP_ANDROID)
++#if BUILDFLAG(IS_ANDROID) && !BUILDFLAG(IS_DESKTOP_ANDROID_VANADIUM)
+   application_state_has_running_activities_ = true;
+   app_status_listener_ =
+       base::android::ApplicationStatusListener::New(base::BindRepeating(
+           &VideoCaptureManager::OnApplicationStateChange, this));
+ #endif
+@@ -949,11 +949,11 @@ VideoCaptureManager::GetOrCreateController(
+           emit_log_message_cb_);
+   controllers_.push_back(new_controller);
+   return new_controller;
+ }
+ 
+-#if BUILDFLAG(IS_ANDROID) && !BUILDFLAG(IS_DESKTOP_ANDROID)
++#if BUILDFLAG(IS_ANDROID) && !BUILDFLAG(IS_DESKTOP_ANDROID_VANADIUM)
+ void VideoCaptureManager::OnApplicationStateChange(
+     base::android::ApplicationState state) {
+   DCHECK_CURRENTLY_ON(BrowserThread::IO);
+ 
+   // Only release/resume devices when the Application state changes from
+diff --git a/content/browser/renderer_host/media/video_capture_manager.h b/content/browser/renderer_host/media/video_capture_manager.h
+index 5881695a62b7a..016ea79c4f9b3 100644
+--- a/content/browser/renderer_host/media/video_capture_manager.h
++++ b/content/browser/renderer_host/media/video_capture_manager.h
+@@ -34,11 +34,11 @@
+ #include "media/capture/video/video_capture_device.h"
+ #include "media/capture/video/video_capture_device_info.h"
+ #include "media/capture/video_capture_types.h"
+ #include "ui/gfx/native_ui_types.h"
+ 
+-#if BUILDFLAG(IS_ANDROID) && !BUILDFLAG(IS_DESKTOP_ANDROID)
++#if BUILDFLAG(IS_ANDROID) && !BUILDFLAG(IS_DESKTOP_ANDROID_VANADIUM)
+ #include "base/android/application_status_listener.h"
+ #endif
+ 
+ namespace content {
+ class VideoCaptureController;
+@@ -206,11 +206,11 @@ class CONTENT_EXPORT VideoCaptureManager
+                        media::mojom::PhotoSettingsPtr settings,
+                        VideoCaptureDevice::SetPhotoOptionsCallback callback);
+   void TakePhoto(const base::UnguessableToken& session_id,
+                  VideoCaptureDevice::TakePhotoCallback callback);
+ 
+-#if BUILDFLAG(IS_ANDROID) && !BUILDFLAG(IS_DESKTOP_ANDROID)
++#if BUILDFLAG(IS_ANDROID) && !BUILDFLAG(IS_DESKTOP_ANDROID_VANADIUM)
+   // Some devices had troubles when stopped and restarted quickly, so the device
+   // is only stopped when Chrome is sent to background and not when, e.g., a tab
+   // is hidden, see http://crbug.com/582295.
+   void OnApplicationStateChange(base::android::ApplicationState state);
+ #endif
+@@ -322,11 +322,11 @@ class CONTENT_EXPORT VideoCaptureManager
+       const media::VideoCaptureSessionId& session_id);
+ 
+   void ReleaseDevices();
+   void ResumeDevices();
+ 
+-#if BUILDFLAG(IS_ANDROID) && !BUILDFLAG(IS_DESKTOP_ANDROID)
++#if BUILDFLAG(IS_ANDROID) && !BUILDFLAG(IS_DESKTOP_ANDROID_VANADIUM)
+   std::unique_ptr<base::android::ApplicationStatusListener>
+       app_status_listener_;
+   bool application_state_has_running_activities_;
+ #endif
+ 
+diff --git a/content/browser/renderer_host/media/video_capture_manager_unittest.cc b/content/browser/renderer_host/media/video_capture_manager_unittest.cc
+index 1bcb0ad5a39d1..f6691bdf47c75 100644
+--- a/content/browser/renderer_host/media/video_capture_manager_unittest.cc
++++ b/content/browser/renderer_host/media/video_capture_manager_unittest.cc
+@@ -366,11 +366,11 @@ class VideoCaptureManagerTest : public testing::Test {
+                                 frame_observer_.get());
+     // Allow possible VideoCaptureDevice::MaybeSuspend() task to run.
+     base::RunLoop().RunUntilIdle();
+   }
+ 
+-#if BUILDFLAG(IS_ANDROID) && !BUILDFLAG(IS_DESKTOP_ANDROID)
++#if BUILDFLAG(IS_ANDROID) && !BUILDFLAG(IS_DESKTOP_ANDROID_VANADIUM)
+   void ApplicationStateChange(base::android::ApplicationState state) {
+     vcm_->OnApplicationStateChange(state);
+   }
+ #endif
+ 
+@@ -878,11 +878,11 @@ TEST_F(VideoCaptureManagerTest, PauseAndResumeClient) {
+   // Wait to check callbacks before removing the listener.
+   base::RunLoop().RunUntilIdle();
+   vcm_->UnregisterListener(listener_.get());
+ }
+ 
+-#if BUILDFLAG(IS_ANDROID) && !BUILDFLAG(IS_DESKTOP_ANDROID)
++#if BUILDFLAG(IS_ANDROID) && !BUILDFLAG(IS_DESKTOP_ANDROID_VANADIUM)
+ // Try to open, start, pause and resume a device.
+ TEST_F(VideoCaptureManagerTest, PauseAndResumeDevice) {
+   InSequence s;
+   EXPECT_CALL(*listener_,
+               Opened(blink::mojom::MediaStreamType::DEVICE_VIDEO_CAPTURE, _));
+@@ -911,11 +911,11 @@ TEST_F(VideoCaptureManagerTest, PauseAndResumeDevice) {
+ 
+   // Wait to check callbacks before removing the listener.
+   base::RunLoop().RunUntilIdle();
+   vcm_->UnregisterListener(listener_.get());
+ }
+-#elif !BUILDFLAG(IS_DESKTOP_ANDROID)
++#elif !BUILDFLAG(IS_DESKTOP_ANDROID_VANADIUM)
+ TEST_F(VideoCaptureManagerTest, PauseAndResumeDeviceOnScreenLock) {
+   vcm_->set_idle_close_timeout_for_testing(base::TimeDelta());
+ 
+   InSequence s;
+ 
+diff --git a/content/public/common/content_features.cc b/content/public/common/content_features.cc
+index 44da4a2ec3fed..1ffb497943dd2 100644
+--- a/content/public/common/content_features.cc
++++ b/content/public/common/content_features.cc
+@@ -616,11 +616,11 @@ BASE_FEATURE(kLazyBrowserInterfaceBroker, base::FEATURE_DISABLED_BY_DEFAULT);
+ // the same destination to one.
+ BASE_FEATURE(kLoadingPredictorLimitPreconnectSocketCount,
+              base::FEATURE_DISABLED_BY_DEFAULT);
+ 
+ BASE_FEATURE(kLogJsConsoleMessages,
+-#if BUILDFLAG(IS_ANDROID) && !BUILDFLAG(IS_DESKTOP_ANDROID)
++#if BUILDFLAG(IS_ANDROID) && !BUILDFLAG(IS_DESKTOP_ANDROID_VANADIUM)
+              base::FEATURE_DISABLED_BY_DEFAULT
+ #else
+              base::FEATURE_ENABLED_BY_DEFAULT
+ #endif
+ );
+diff --git a/extensions/browser/api/web_request/permission_helper.cc b/extensions/browser/api/web_request/permission_helper.cc
+index 46c329f4a7489..7428b30c6fd51 100644
+--- a/extensions/browser/api/web_request/permission_helper.cc
++++ b/extensions/browser/api/web_request/permission_helper.cc
+@@ -62,11 +62,11 @@ void BrowserContextKeyedAPIFactory<
+   // `ShouldHideBrowserNetworkRequest()` relies on the ExtensionsAPIClient,
+   // which itself uses varioius KeyedServices. Thus, this KeyedService
+   // implicitly depends upon those.
+   ExtensionsAPIClient* extensions_api_client = ExtensionsAPIClient::Get();
+ 
+-#if BUILDFLAG(IS_DESKTOP_ANDROID)
++#if BUILDFLAG(IS_DESKTOP_ANDROID_VANADIUM)
+   // TODO(https://crbug.com/356905053): On Android, the startup and
+   // initialization flow is different.
+   // ExtensionsAPIClient is instantiated as part of the ExtensionsBrowserClient,
+   // which in turn is created as part of BrowserProcessImpl::Init(). On
+   // most desktop platforms, this happens before any profile initialization,
+diff --git a/extensions/browser/extension_util_unittest.cc b/extensions/browser/extension_util_unittest.cc
+index c31bd0e619d6f..57665cf0a2cb4 100644
+--- a/extensions/browser/extension_util_unittest.cc
++++ b/extensions/browser/extension_util_unittest.cc
+@@ -66,11 +66,11 @@ TEST(ExtensionUtilTest, MapUrlToLocalFilePath) {
+   EXPECT_FALSE(does_not_exist_path.empty());
+ }
+ 
+ // TODO(https://crbug.com/356905053):Strict site isolation is not enabled on
+ // Android, so this test is disabled on desktop android.
+-#if BUILDFLAG(IS_DESKTOP_ANDROID)
++#if BUILDFLAG(IS_DESKTOP_ANDROID_VANADIUM)
+ #define MAYBE_ExtensionIdForSiteInstance DISABLED_ExtensionIdForSiteInstance
+ #else
+ #define MAYBE_ExtensionIdForSiteInstance ExtensionIdForSiteInstance
+ #endif
+ TEST(ExtensionUtilTest, MAYBE_ExtensionIdForSiteInstance) {
+diff --git a/extensions/common/command.cc b/extensions/common/command.cc
+index 568d726c7e905..b4e605dddd750 100644
+--- a/extensions/common/command.cc
++++ b/extensions/common/command.cc
+@@ -116,11 +116,11 @@ std::string Command::CommandPlatform() {
+   return ui::kKeybindingPlatformMac;
+ #elif BUILDFLAG(IS_CHROMEOS)
+   return ui::kKeybindingPlatformChromeOs;
+ #elif BUILDFLAG(IS_LINUX)
+   return ui::kKeybindingPlatformLinux;
+-#elif BUILDFLAG(IS_DESKTOP_ANDROID)
++#elif BUILDFLAG(IS_DESKTOP_ANDROID_VANADIUM)
+   // For now, we use linux keybindings on desktop android.
+   return ui::kKeybindingPlatformLinux;
+ #else
+ #error Unsupported platform
+ #endif
+diff --git a/extensions/common/command_unittest.cc b/extensions/common/command_unittest.cc
+index 385078f421e5c..0d173b104b971 100644
+--- a/extensions/common/command_unittest.cc
++++ b/extensions/common/command_unittest.cc
+@@ -239,11 +239,11 @@ TEST(CommandTest, ExtensionCommandParsingFallback) {
+ #elif BUILDFLAG(IS_CHROMEOS)
+   ui::Accelerator accelerator(ui::VKEY_C,
+                               ui::EF_SHIFT_DOWN | ui::EF_CONTROL_DOWN);
+   // TODO(https://crbug.com/356905053): Should this be ChromeOS keybindings?
+ 
+-#elif BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_DESKTOP_ANDROID)
++#elif BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_DESKTOP_ANDROID_VANADIUM)
+   ui::Accelerator accelerator(ui::VKEY_L,
+                               ui::EF_SHIFT_DOWN | ui::EF_CONTROL_DOWN);
+ #else
+   ui::Accelerator accelerator(ui::VKEY_D,
+                               ui::EF_SHIFT_DOWN | ui::EF_CONTROL_DOWN);
+diff --git a/extensions/common/extension_features.cc b/extensions/common/extension_features.cc
+index e735c1c044b4b..a14f0992070da 100644
+--- a/extensions/common/extension_features.cc
++++ b/extensions/common/extension_features.cc
+@@ -55,11 +55,11 @@ BASE_FEATURE(kCheckingNoExtensionIdInExtensionIpcs,
+ BASE_FEATURE(kSkipResetServiceWorkerURLLoaderFactories,
+              base::FEATURE_ENABLED_BY_DEFAULT);
+ 
+ BASE_FEATURE(kEnableWebHidInWebView, base::FEATURE_ENABLED_BY_DEFAULT);
+ 
+-#if BUILDFLAG(ENABLE_DESKTOP_ANDROID_EXTENSIONS)
++#if BUILDFLAG(ENABLE_DESKTOP_ANDROID_EXTENSIONS_VANADIUM)
+ // Disabled by default because on first-run we don't have a Finch seed yet, so
+ // we want to default to the safe behavior of no extensions.
+ BASE_FEATURE(kEnableExtensionsForCorpDesktopAndroid,
+              base::FEATURE_DISABLED_BY_DEFAULT);
+ #endif
+@@ -148,11 +148,11 @@ BASE_FEATURE(kDisableDisableExtensionsExceptCommandLineSwitch,
+ 
+ BASE_FEATURE(kDisableExtensionsOnChromeUrlsSwitch,
+ // TODO (crbug.com/426554244): Determine if this switch should be
+ // removed for desktop-android builds as well.
+ #if BUILDFLAG(GOOGLE_CHROME_BRANDING) && !BUILDFLAG(IS_CHROMEOS) && \
+-    !BUILDFLAG(ENABLE_DESKTOP_ANDROID_EXTENSIONS)
++    !BUILDFLAG(ENABLE_DESKTOP_ANDROID_EXTENSIONS_VANADIUM)
+              base::FEATURE_ENABLED_BY_DEFAULT
+ #else
+              base::FEATURE_DISABLED_BY_DEFAULT
+ #endif
+ );
+diff --git a/extensions/common/extension_features.h b/extensions/common/extension_features.h
+index bc8ed19b2c1da..19dcfb63837cc 100644
+--- a/extensions/common/extension_features.h
++++ b/extensions/common/extension_features.h
+@@ -98,11 +98,11 @@ BASE_DECLARE_FEATURE(kSkipResetServiceWorkerURLLoaderFactories);
+ 
+ // If enabled, <webview>s will be allowed to request permission from an
+ // embedding Chrome App to request access to Human Interface Devices.
+ BASE_DECLARE_FEATURE(kEnableWebHidInWebView);
+ 
+-#if BUILDFLAG(ENABLE_DESKTOP_ANDROID_EXTENSIONS)
++#if BUILDFLAG(ENABLE_DESKTOP_ANDROID_EXTENSIONS_VANADIUM)
+ // If enabled, extensions will be enabled for @google.com and @managedchrome.com
+ // users on desktop Android. Otherwise they will be blocked.
+ BASE_DECLARE_FEATURE(kEnableExtensionsForCorpDesktopAndroid);
+ #endif
+ 
+diff --git a/extensions/common/features/feature.cc b/extensions/common/features/feature.cc
+index 1cc3a14472cb0..342504ce41c52 100644
+--- a/extensions/common/features/feature.cc
++++ b/extensions/common/features/feature.cc
+@@ -26,11 +26,11 @@ Feature::Platform Feature::GetCurrentPlatform() {
+   return LINUX_PLATFORM;
+ #elif BUILDFLAG(IS_MAC)
+   return MACOSX_PLATFORM;
+ #elif BUILDFLAG(IS_WIN)
+   return WIN_PLATFORM;
+-#elif BUILDFLAG(ENABLE_DESKTOP_ANDROID_EXTENSIONS)
++#elif BUILDFLAG(ENABLE_DESKTOP_ANDROID_EXTENSIONS_VANADIUM)
+   return DESKTOP_ANDROID_PLATFORM;
+ #else
+   return UNSPECIFIED_PLATFORM;
+ #endif
+ }
+diff --git a/extensions/renderer/bindings/api_binding_util.cc b/extensions/renderer/bindings/api_binding_util.cc
+index 648d0549e2912..d3dd87b1fe9f0 100644
+--- a/extensions/renderer/bindings/api_binding_util.cc
++++ b/extensions/renderer/bindings/api_binding_util.cc
+@@ -132,11 +132,11 @@ std::string GetPlatformString() {
+   return "linux";
+ #elif BUILDFLAG(IS_MAC)
+   return "mac";
+ #elif BUILDFLAG(IS_WIN)
+   return "win";
+-#elif BUILDFLAG(IS_DESKTOP_ANDROID)
++#elif BUILDFLAG(IS_DESKTOP_ANDROID_VANADIUM)
+   return "desktop_android";
+ #else
+   NOTREACHED();
+ #endif
+ }
+diff --git a/extensions/test/extensions_unittests_main.cc b/extensions/test/extensions_unittests_main.cc
+index 2b7d855db7b9c..e4add5d47006a 100644
+--- a/extensions/test/extensions_unittests_main.cc
++++ b/extensions/test/extensions_unittests_main.cc
+@@ -82,11 +82,11 @@ void ExtensionsTestSuite::Initialize() {
+ 
+   extensions::RegisterPathProvider();
+ 
+   base::FilePath extensions_shell_and_test_pak_path;
+   base::PathService::Get(base::DIR_ASSETS, &extensions_shell_and_test_pak_path);
+-#if BUILDFLAG(IS_DESKTOP_ANDROID)
++#if BUILDFLAG(IS_DESKTOP_ANDROID_VANADIUM)
+   // On Android all pak files are inside the paks folder.
+   extensions_shell_and_test_pak_path =
+       extensions_shell_and_test_pak_path.Append(FILE_PATH_LITERAL("paks"));
+ #endif
+   ui::ResourceBundle::InitSharedInstanceWithPakPath(
+diff --git a/third_party/blink/common/features.cc b/third_party/blink/common/features.cc
+index 4c511f2a856cf..414c4f4ebf8de 100644
+--- a/third_party/blink/common/features.cc
++++ b/third_party/blink/common/features.cc
+@@ -2346,11 +2346,11 @@ BASE_FEATURE(kBypassRequestForbiddenHeadersCheck,
+ BASE_FEATURE(kStopInBackground,
+              "stop-in-background",
+ // b/248036988 - Disable this for Chromecast on Android builds to prevent apps
+ // that play audio in the background from stopping.
+ #if BUILDFLAG(IS_ANDROID) && !BUILDFLAG(IS_CAST_ANDROID) && \
+-    !BUILDFLAG(IS_DESKTOP_ANDROID)
++    !BUILDFLAG(IS_DESKTOP_ANDROID_VANADIUM)
+              base::FEATURE_ENABLED_BY_DEFAULT
+ #else
+              base::FEATURE_DISABLED_BY_DEFAULT
+ #endif
+ );
+diff --git a/third_party/blink/renderer/modules/modules_initializer.cc b/third_party/blink/renderer/modules/modules_initializer.cc
+index 638d78697aa6a..2c71a29987091 100644
+--- a/third_party/blink/renderer/modules/modules_initializer.cc
++++ b/third_party/blink/renderer/modules/modules_initializer.cc
+@@ -117,11 +117,11 @@
+ #include "third_party/blink/renderer/modules/remote_objects/remote_object_gateway_impl.h"
+ #endif
+ 
+ namespace blink {
+ 
+-#if BUILDFLAG(IS_ANDROID) && !BUILDFLAG(IS_DESKTOP_ANDROID)
++#if BUILDFLAG(IS_ANDROID) && !BUILDFLAG(IS_DESKTOP_ANDROID_VANADIUM)
+ 
+ class SuspendCaptureObserver : public GarbageCollected<SuspendCaptureObserver>,
+                                public PageVisibilityObserver {
+  public:
+   explicit SuspendCaptureObserver(Page& page) : PageVisibilityObserver(&page) {}
+@@ -152,11 +152,11 @@ class SuspendCaptureObserver : public GarbageCollected<SuspendCaptureObserver>,
+   void Trace(Visitor* visitor) const override {
+     PageVisibilityObserver::Trace(visitor);
+   }
+ };
+ 
+-#endif  // BUILDFLAG(IS_ANDROID) && !BUILDFLAG(IS_DESKTOP_ANDROID)
++#endif  // BUILDFLAG(IS_ANDROID) && !BUILDFLAG(IS_DESKTOP_ANDROID_VANADIUM)
+ 
+ void ModulesInitializer::Initialize() {
+   // Strings must be initialized before calling CoreInitializer::init().
+   const unsigned kModulesStaticStringsCount =
+       event_interface_names::kModulesNamesCount +
+@@ -363,14 +363,14 @@ RemotePlaybackClient* ModulesInitializer::CreateRemotePlaybackClient(
+ void ModulesInitializer::ProvideModulesToPage(
+     Page& page,
+     const SessionStorageNamespaceId& namespace_id) const {
+   StorageNamespace::ProvideSessionStorageNamespaceTo(page, namespace_id);
+   AudioGraphTracer::ProvideAudioGraphTracerTo(page);
+-#if BUILDFLAG(IS_ANDROID) && !BUILDFLAG(IS_DESKTOP_ANDROID)
++#if BUILDFLAG(IS_ANDROID) && !BUILDFLAG(IS_DESKTOP_ANDROID_VANADIUM)
+   page.SetSuspendCaptureObserver(
+       MakeGarbageCollected<SuspendCaptureObserver>(page));
+-#endif  // BUILDFLAG(IS_ANDROID)  && !BUILDFLAG(IS_DESKTOP_ANDROID)
++#endif  // BUILDFLAG(IS_ANDROID)  && !BUILDFLAG(IS_DESKTOP_ANDROID_VANADIUM)
+ }
+ 
+ void ModulesInitializer::ForceNextWebGLContextCreationToFail() const {
+   WebGLRenderingContext::ForceNextWebGLContextCreationToFail();
+ }
+diff --git a/ui/base/accelerators/command.cc b/ui/base/accelerators/command.cc
+index 83c866f080a86..b35e8d54514a3 100644
+--- a/ui/base/accelerators/command.cc
++++ b/ui/base/accelerators/command.cc
+@@ -84,11 +84,11 @@ std::string Command::CommandPlatform() {
+   return ui::kKeybindingPlatformLinux;
+ #elif BUILDFLAG(IS_FUCHSIA)
+   // TODO(crbug.com/40220501): Change this once we decide what string should be
+   // used for Fuchsia.
+   return ui::kKeybindingPlatformLinux;
+-#elif BUILDFLAG(IS_DESKTOP_ANDROID)
++#elif BUILDFLAG(IS_DESKTOP_ANDROID_VANADIUM)
+   // For now, we use linux keybindings on desktop android.
+   // TODO(https://crbug.com/356905053): Should this be ChromeOS keybindings?
+   return ui::kKeybindingPlatformLinux;
+ #else
+   return "";
+diff --git a/tools/json_schema_compiler/cpp_bundle_generator.py b/tools/json_schema_compiler/cpp_bundle_generator.py
+index 05bb1e20a95f3..370497012fa69 100644
+--- a/tools/json_schema_compiler/cpp_bundle_generator.py
++++ b/tools/json_schema_compiler/cpp_bundle_generator.py
+@@ -136,11 +136,11 @@ class CppBundleGenerator(object):
+     ifdefs = []
+     for platform in model_object.platforms:
+       if platform == Platforms.CHROMEOS:
+         ifdefs.append('BUILDFLAG(IS_CHROMEOS)')
+       elif platform == Platforms.DESKTOP_ANDROID:
+-        ifdefs.append('BUILDFLAG(IS_DESKTOP_ANDROID)')
++        ifdefs.append('BUILDFLAG(IS_DESKTOP_ANDROID_VANADIUM)')
+       elif platform == Platforms.LINUX:
+         ifdefs.append('BUILDFLAG(IS_LINUX)')
+       elif platform == Platforms.MAC:
+         ifdefs.append('BUILDFLAG(IS_MAC)')
+       elif platform == Platforms.WIN:
+diff --git a/tools/json_schema_compiler/cpp_bundle_generator_test.py b/tools/json_schema_compiler/cpp_bundle_generator_test.py
+index 81ec7f1f53d33..86925e8c7511f 100755
+--- a/tools/json_schema_compiler/cpp_bundle_generator_test.py
++++ b/tools/json_schema_compiler/cpp_bundle_generator_test.py
+@@ -36,11 +36,11 @@ class CppBundleGeneratorTest(unittest.TestCase):
+ 
+   def testIfDefsForAll(self):
+     cpp_bundle_generator, model = _createCppBundleGenerator(
+         'test/function_platform_all.json')
+     self.assertEqual(
+-        'BUILDFLAG(IS_CHROMEOS) || BUILDFLAG(IS_DESKTOP_ANDROID) '
++        'BUILDFLAG(IS_CHROMEOS) || BUILDFLAG(IS_DESKTOP_ANDROID_VANADIUM) '
+         '|| BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_WIN)',
+         _getPlatformIfdefs(cpp_bundle_generator, model))
+ 
+   def testIfDefsForChromeOS(self):
+     cpp_bundle_generator, model = _createCppBundleGenerator(
