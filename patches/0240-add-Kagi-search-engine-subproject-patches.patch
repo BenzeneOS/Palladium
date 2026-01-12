@@ -1,0 +1,944 @@
+From 24774e72a0efcd4550a525245529ef16c4e20476 Mon Sep 17 00:00:00 2001
+From: Amaan Qureshi <git@amaanq.com>
+Date: Mon, 12 Jan 2026 08:42:13 -0500
+Subject: [PATCH] Add Kagi to all regional search engine lists
+
+Add Kagi (search engine ID 115) as a built-in option after DuckDuckGo
+in all regional search engine lists. This provides users with another
+privacy-focused search engine option.
+---
+ ...-to-all-regional-search-engine-lists.patch | 893 ++++++++++++++++++
+ ...-Increment-version-for-Kagi-addition.patch |  21 +
+ 2 files changed, 914 insertions(+)
+ create mode 100644 vanadium/subprojects_patches/third_party/search_engines_data/resources/0005-Add-Kagi-to-all-regional-search-engine-lists.patch
+ create mode 100644 vanadium/subprojects_patches/third_party/search_engines_data/resources/0006-Increment-version-for-Kagi-addition.patch
+
+diff --git a/vanadium/subprojects_patches/third_party/search_engines_data/resources/0005-Add-Kagi-to-all-regional-search-engine-lists.patch b/vanadium/subprojects_patches/third_party/search_engines_data/resources/0005-Add-Kagi-to-all-regional-search-engine-lists.patch
+new file mode 100644
+index 0000000000000..cb85456167500
+--- /dev/null
++++ b/vanadium/subprojects_patches/third_party/search_engines_data/resources/0005-Add-Kagi-to-all-regional-search-engine-lists.patch
+@@ -0,0 +1,893 @@
++From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
++From: Amaan Qureshi <git@amaanq.com>
++Date: Sat, 11 Jan 2026 00:00:00 +0000
++Subject: [PATCH] Add Kagi to all regional search engine lists
++
++Adds Kagi as second option (after DuckDuckGo) in all regional
++search engine lists. Kagi is a privacy-focused, ad-free search
++engine that provides high-quality search results.
++---
++
++diff --git a/definitions/regional_settings.json b/definitions/regional_settings.json
++--- a/definitions/regional_settings.json
+++++ b/definitions/regional_settings.json
++@@ -7,6 +7,7 @@
++       // United Arab Emirates
++       "search_engines": [
++         "&duckduckgo",
+++        "&kagi",
++         "&google",
++         "&bing",
++         "&yahoo",
++@@ -17,6 +18,7 @@
++       // Albania
++       "search_engines": [
++         "&duckduckgo",
+++        "&kagi",
++         "&google",
++         "&bing",
++         "&yahoo",
++@@ -27,6 +29,7 @@
++       // Armenia
++       "search_engines": [
++         "&duckduckgo",
+++        "&kagi",
++         "&google",
++         "&bing",
++         "&yahoo_ar",
++@@ -37,6 +40,7 @@
++       // Austria
++       "search_engines": [
++         "&duckduckgo",
+++        "&kagi",
++         "&google",
++         "&brave",
++         "&ecosia",
++@@ -50,6 +54,7 @@
++       // Australia
++       "search_engines": [
++         "&duckduckgo",
+++        "&kagi",
++         "&google",
++         "&bing",
++         "&yahoo_au",
++@@ -60,6 +65,7 @@
++       // Bosnia and Herzegovina
++       "search_engines": [
++         "&duckduckgo",
+++        "&kagi",
++         "&google",
++         "&bing",
++         "&yahoo",
++@@ -70,6 +76,7 @@
++       // Belgium
++       "search_engines": [
++         "&duckduckgo",
+++        "&kagi",
++         "&google",
++         "&brave",
++         "&ecosia",
++@@ -83,6 +90,7 @@
++       // Bulgaria
++       "search_engines": [
++         "&duckduckgo",
+++        "&kagi",
++         "&google",
++         "&brave",
++         "&bing",
++@@ -96,6 +104,7 @@
++       // Bahrain
++       "search_engines": [
++         "&duckduckgo",
+++        "&kagi",
++         "&google",
++         "&bing",
++         "&yahoo",
++@@ -106,6 +115,7 @@
++       // Burundi
++       "search_engines": [
++         "&duckduckgo",
+++        "&kagi",
++         "&google",
++         "&bing",
++         "&yahoo",
++@@ -116,6 +126,7 @@
++       // Brunei
++       "search_engines": [
++         "&duckduckgo",
+++        "&kagi",
++         "&google",
++         "&bing",
++         "&yahoo",
++@@ -126,6 +137,7 @@
++       // Bolivia
++       "search_engines": [
++         "&duckduckgo",
+++        "&kagi",
++         "&google",
++         "&bing",
++         "&yahoo",
++@@ -136,6 +148,7 @@
++       // Brazil
++       "search_engines": [
++         "&duckduckgo",
+++        "&kagi",
++         "&google",
++         "&bing",
++         "&yahoo_br",
++@@ -146,6 +159,7 @@
++       // Belarus
++       "search_engines": [
++         "&duckduckgo",
+++        "&kagi",
++         "&google",
++         "&yandex_by",
++         "&bing",
++@@ -156,6 +170,7 @@
++       // Belize
++       "search_engines": [
++         "&duckduckgo",
+++        "&kagi",
++         "&google",
++         "&bing",
++         "&yahoo",
++@@ -166,6 +181,7 @@
++       // Canada
++       "search_engines": [
++         "&duckduckgo",
+++        "&kagi",
++         "&google",
++         "&bing",
++         "&yahoo_ca",
++@@ -176,6 +192,7 @@
++       // Switzerland
++       "search_engines": [
++         "&duckduckgo",
+++        "&kagi",
++         "&google",
++         "&bing",
++         "&yahoo_ch",
++@@ -186,6 +203,7 @@
++       // Chile
++       "search_engines": [
++         "&duckduckgo",
+++        "&kagi",
++         "&google",
++         "&bing",
++         "&yahoo_cl",
++@@ -196,6 +214,7 @@
++       // China
++       "search_engines": [
++         "&duckduckgo",
+++        "&kagi",
++         "&baidu",
++         "&bing",
++         "&sogou",
++@@ -207,6 +226,7 @@
++       // Colombia
++       "search_engines": [
++         "&duckduckgo",
+++        "&kagi",
++         "&google",
++         "&bing",
++         "&yahoo_co",
++@@ -217,6 +237,7 @@
++       // Costa Rica
++       "search_engines": [
++         "&duckduckgo",
+++        "&kagi",
++         "&google",
++         "&bing",
++         "&yahoo",
++@@ -227,6 +248,7 @@
++       // Republic of Cyprus
++       "search_engines": [
++         "&duckduckgo",
+++        "&kagi",
++         "&google",
++         "&brave",
++         "&bing",
++@@ -240,6 +262,7 @@
++       // Czechia
++       "search_engines": [
++         "&duckduckgo",
+++        "&kagi",
++         "&google",
++         "&seznam",
++         "&brave",
++@@ -253,6 +276,7 @@
++       // Germany
++       "search_engines": [
++         "&duckduckgo",
+++        "&kagi",
++         "&google",
++         "&brave",
++         "&ecosia",
++@@ -266,6 +290,7 @@
++       // Denmark
++       "search_engines": [
++         "&duckduckgo",
+++        "&kagi",
++         "&google",
++         "&brave",
++         "&bing",
++@@ -279,6 +304,7 @@
++       // Dominican Republic
++       "search_engines": [
++         "&duckduckgo",
+++        "&kagi",
++         "&google",
++         "&bing",
++         "&yahoo",
++@@ -289,6 +315,7 @@
++       // Algeria
++       "search_engines": [
++         "&duckduckgo",
+++        "&kagi",
++         "&google",
++         "&bing",
++         "&yahoo_fr",
++@@ -299,6 +326,7 @@
++       // Ecuador
++       "search_engines": [
++         "&duckduckgo",
+++        "&kagi",
++         "&google",
++         "&bing",
++         "&yahoo_es",
++@@ -309,6 +337,7 @@
++       // Estonia
++       "search_engines": [
++         "&duckduckgo",
+++        "&kagi",
++         "&google",
++         "&brave",
++         "&bing",
++@@ -322,6 +351,7 @@
++       // Egypt
++       "search_engines": [
++         "&duckduckgo",
+++        "&kagi",
++         "&google",
++         "&bing",
++         "&yahoo",
++@@ -332,6 +362,7 @@
++       // Spain
++       "search_engines": [
++         "&duckduckgo",
+++        "&kagi",
++         "&google",
++         "&brave",
++         "&bing",
++@@ -345,6 +376,7 @@
++       // Finland
++       "search_engines": [
++         "&duckduckgo",
+++        "&kagi",
++         "&google",
++         "&brave",
++         "&bing",
++@@ -358,6 +390,7 @@
++       // Faroe Islands
++       "search_engines": [
++         "&duckduckgo",
+++        "&kagi",
++         "&google",
++         "&bing",
++         "&yahoo_uk",
++@@ -368,6 +401,7 @@
++       // France
++       "search_engines": [
++         "&duckduckgo",
+++        "&kagi",
++         "&google",
++         "&brave",
++         "&ecosia",
++@@ -381,6 +415,7 @@
++       // United Kingdom
++       "search_engines": [
++         "&duckduckgo",
+++        "&kagi",
++         "&google",
++         "&bing",
++         "&yahoo_uk",
++@@ -391,6 +426,7 @@
++       // Greece
++       "search_engines": [
++         "&duckduckgo",
+++        "&kagi",
++         "&google",
++         "&brave",
++         "&bing",
++@@ -404,6 +440,7 @@
++       // Guatemala
++       "search_engines": [
++         "&duckduckgo",
+++        "&kagi",
++         "&google",
++         "&bing",
++         "&yahoo",
++@@ -414,6 +451,7 @@
++       // Hong Kong
++       "search_engines": [
++         "&duckduckgo",
+++        "&kagi",
++         "&google",
++         "&bing",
++         "&yahoo_hk",
++@@ -425,6 +463,7 @@
++       // Honduras
++       "search_engines": [
++         "&duckduckgo",
+++        "&kagi",
++         "&google",
++         "&bing",
++         "&yahoo",
++@@ -435,6 +474,7 @@
++       // Croatia
++       "search_engines": [
++         "&duckduckgo",
+++        "&kagi",
++         "&google",
++         "&brave",
++         "&bing",
++@@ -448,6 +488,7 @@
++       // Hungary
++       "search_engines": [
++         "&duckduckgo",
+++        "&kagi",
++         "&google",
++         "&brave",
++         "&bing",
++@@ -461,6 +502,7 @@
++       // Indonesia
++       "search_engines": [
++         "&duckduckgo",
+++        "&kagi",
++         "&google",
++         "&yandex_com",
++         "&bing",
++@@ -471,6 +513,7 @@
++       // Ireland
++       "search_engines": [
++         "&duckduckgo",
+++        "&kagi",
++         "&google",
++         "&brave",
++         "&bing",
++@@ -484,6 +527,7 @@
++       // Israel
++       "search_engines": [
++         "&duckduckgo",
+++        "&kagi",
++         "&google",
++         "&bing",
++         "&yandex_ru",
++@@ -494,6 +538,7 @@
++       // India
++       "search_engines": [
++         "&duckduckgo",
+++        "&kagi",
++         "&google",
++         "&bing",
++         "&yahoo_in",
++@@ -504,6 +549,7 @@
++       // Iraq
++       "search_engines": [
++         "&duckduckgo",
+++        "&kagi",
++         "&google",
++         "&bing",
++         "&yandex_tr",
++@@ -514,6 +560,7 @@
++       // Iran
++       "search_engines": [
++         "&duckduckgo",
+++        "&kagi",
++         "&google",
++         "&bing",
++         "&yahoo",
++@@ -524,6 +571,7 @@
++       // Iceland
++       "search_engines": [
++         "&duckduckgo",
+++        "&kagi",
++         "&google",
++         "&brave",
++         "&bing",
++@@ -537,6 +585,7 @@
++       // Italy
++       "search_engines": [
++         "&duckduckgo",
+++        "&kagi",
++         "&google",
++         "&brave",
++         "&bing",
++@@ -550,6 +599,7 @@
++       // Jamaica
++       "search_engines": [
++         "&duckduckgo",
+++        "&kagi",
++         "&google",
++         "&bing",
++         "&yahoo",
++@@ -560,6 +610,7 @@
++       // Jordan
++       "search_engines": [
++         "&duckduckgo",
+++        "&kagi",
++         "&google",
++         "&bing",
++         "&yahoo",
++@@ -570,6 +621,7 @@
++       // Japan
++       "search_engines": [
++         "&duckduckgo",
+++        "&kagi",
++         "&google",
++         "&yahoo_jp",
++         "&bing",
++@@ -580,6 +632,7 @@
++       // Kenya
++       "search_engines": [
++         "&duckduckgo",
+++        "&kagi",
++         "&google",
++         "&bing",
++         "&yahoo",
++@@ -590,6 +643,7 @@
++       // South Korea
++       "search_engines": [
++         "&duckduckgo",
+++        "&kagi",
++         "&google",
++         "&naver",
++         "&bing",
++@@ -601,6 +655,7 @@
++       // Kuwait
++       "search_engines": [
++         "&duckduckgo",
+++        "&kagi",
++         "&google",
++         "&bing",
++         "&yandex_tr",
++@@ -611,6 +666,7 @@
++       // Kazakhstan
++       "search_engines": [
++         "&duckduckgo",
+++        "&kagi",
++         "&google",
++         "&yandex_kz",
++         "&bing",
++@@ -622,6 +678,7 @@
++       // Lebanon
++       "search_engines": [
++         "&duckduckgo",
+++        "&kagi",
++         "&google",
++         "&bing",
++         "&yahoo",
++@@ -632,6 +689,7 @@
++       // Liechtenstein
++       "search_engines": [
++         "&duckduckgo",
+++        "&kagi",
++         "&google",
++         "&brave",
++         "&bing",
++@@ -645,6 +703,7 @@
++       // Lithuania
++       "search_engines": [
++         "&duckduckgo",
+++        "&kagi",
++         "&google",
++         "&brave",
++         "&bing",
++@@ -658,6 +717,7 @@
++       // Luxembourg
++       "search_engines": [
++         "&duckduckgo",
+++        "&kagi",
++         "&google",
++         "&brave",
++         "&bing",
++@@ -671,6 +731,7 @@
++       // Latvia
++       "search_engines": [
++         "&duckduckgo",
+++        "&kagi",
++         "&google",
++         "&brave",
++         "&bing",
++@@ -684,6 +745,7 @@
++       // Libya
++       "search_engines": [
++         "&duckduckgo",
+++        "&kagi",
++         "&google",
++         "&bing",
++         "&yandex_tr",
++@@ -694,6 +756,7 @@
++       // Morocco
++       "search_engines": [
++         "&duckduckgo",
+++        "&kagi",
++         "&google",
++         "&bing",
++         "&yahoo_fr",
++@@ -704,6 +767,7 @@
++       // Monaco
++       "search_engines": [
++         "&duckduckgo",
+++        "&kagi",
++         "&google",
++         "&bing",
++         "&yahoo_fr",
++@@ -714,6 +778,7 @@
++       // Moldova
++       "search_engines": [
++         "&duckduckgo",
+++        "&kagi",
++         "&google",
++         "&yandex_ru",
++         "&bing",
++@@ -724,6 +789,7 @@
++       // Montenegro
++       "search_engines": [
++         "&duckduckgo",
+++        "&kagi",
++         "&google",
++         "&bing",
++         "&yandex_ru",
++@@ -734,6 +800,7 @@
++       // Macedonia
++       "search_engines": [
++         "&duckduckgo",
+++        "&kagi",
++         "&google",
++         "&bing",
++         "&yahoo",
++@@ -744,6 +811,7 @@
++       // Malta
++       "search_engines": [
++         "&duckduckgo",
+++        "&kagi",
++         "&google",
++         "&brave",
++         "&bing",
++@@ -757,6 +825,7 @@
++       // Mexico
++       "search_engines": [
++         "&duckduckgo",
+++        "&kagi",
++         "&google",
++         "&bing",
++         "&yahoo_mx",
++@@ -767,6 +836,7 @@
++       // Malaysia
++       "search_engines": [
++         "&duckduckgo",
+++        "&kagi",
++         "&google",
++         "&bing",
++         "&yahoo_my",
++@@ -777,6 +847,7 @@
++       // Nicaragua
++       "search_engines": [
++         "&duckduckgo",
+++        "&kagi",
++         "&google",
++         "&bing",
++         "&yahoo",
++@@ -787,6 +858,7 @@
++       // Netherlands
++       "search_engines": [
++         "&duckduckgo",
+++        "&kagi",
++         "&google",
++         "&brave",
++         "&bing",
++@@ -800,6 +872,7 @@
++       // Norway
++       "search_engines": [
++         "&duckduckgo",
+++        "&kagi",
++         "&google",
++         "&brave",
++         "&bing",
++@@ -813,6 +886,7 @@
++       // New Zealand
++       "search_engines": [
++         "&duckduckgo",
+++        "&kagi",
++         "&google",
++         "&bing",
++         "&yahoo_nz",
++@@ -823,6 +897,7 @@
++       // Oman
++       "search_engines": [
++         "&duckduckgo",
+++        "&kagi",
++         "&google",
++         "&bing",
++         "&yahoo",
++@@ -833,6 +908,7 @@
++       // Panama
++       "search_engines": [
++         "&duckduckgo",
+++        "&kagi",
++         "&google",
++         "&bing",
++         "&yahoo_es",
++@@ -843,6 +919,7 @@
++       // Peru
++       "search_engines": [
++         "&duckduckgo",
+++        "&kagi",
++         "&google",
++         "&bing",
++         "&yahoo_pe",
++@@ -853,6 +930,7 @@
++       // Philippines
++       "search_engines": [
++         "&duckduckgo",
+++        "&kagi",
++         "&google",
++         "&bing",
++         "&yahoo_ph",
++@@ -863,6 +941,7 @@
++       // Pakistan
++       "search_engines": [
++         "&duckduckgo",
+++        "&kagi",
++         "&google",
++         "&bing",
++         "&yahoo",
++@@ -873,6 +952,7 @@
++       // Poland
++       "search_engines": [
++         "&duckduckgo",
+++        "&kagi",
++         "&google",
++         "&brave",
++         "&bing",
++@@ -886,6 +966,7 @@
++       // Puerto Rico
++       "search_engines": [
++         "&duckduckgo",
+++        "&kagi",
++         "&google",
++         "&bing",
++         "&yahoo",
++@@ -896,6 +977,7 @@
++       // Portugal
++       "search_engines": [
++         "&duckduckgo",
+++        "&kagi",
++         "&google",
++         "&brave",
++         "&bing",
++@@ -909,6 +991,7 @@
++       // Paraguay
++       "search_engines": [
++         "&duckduckgo",
+++        "&kagi",
++         "&google",
++         "&bing",
++         "&yahoo_es",
++@@ -919,6 +1002,7 @@
++       // Quatar
++       "search_engines": [
++         "&duckduckgo",
+++        "&kagi",
++         "&google",
++         "&bing",
++         "&yahoo",
++@@ -929,6 +1013,7 @@
++       // Romania
++       "search_engines": [
++         "&duckduckgo",
+++        "&kagi",
++         "&google",
++         "&brave",
++         "&yahoo_emea",
++@@ -942,6 +1027,7 @@
++       // Serbia
++       "search_engines": [
++         "&duckduckgo",
+++        "&kagi",
++         "&google",
++         "&bing",
++         "&yahoo",
++@@ -952,6 +1038,7 @@
++       // Russia
++       "search_engines": [
++         "&duckduckgo",
+++        "&kagi",
++         "&yandex_ru",
++         "&google",
++         "&bing",
++@@ -962,6 +1049,7 @@
++       // Rwanda
++       "search_engines": [
++         "&duckduckgo",
+++        "&kagi",
++         "&google",
++         "&bing",
++         "&yahoo",
++@@ -972,6 +1060,7 @@
++       // Saudi Arabia
++       "search_engines": [
++         "&duckduckgo",
+++        "&kagi",
++         "&google",
++         "&bing",
++         "&yandex_com",
++@@ -982,6 +1071,7 @@
++       // Sweden
++       "search_engines": [
++         "&duckduckgo",
+++        "&kagi",
++         "&google",
++         "&brave",
++         "&bing",
++@@ -995,6 +1085,7 @@
++       // Singapore
++       "search_engines": [
++         "&duckduckgo",
+++        "&kagi",
++         "&google",
++         "&bing",
++         "&yahoo_sg",
++@@ -1005,6 +1096,7 @@
++       // Slovenia
++       "search_engines": [
++         "&duckduckgo",
+++        "&kagi",
++         "&google",
++         "&brave",
++         "&bing",
++@@ -1018,6 +1110,7 @@
++       // Slovakia
++       "search_engines": [
++         "&duckduckgo",
+++        "&kagi",
++         "&google",
++         "&brave",
++         "&bing",
++@@ -1031,6 +1124,7 @@
++       // El Salvador
++       "search_engines": [
++         "&duckduckgo",
+++        "&kagi",
++         "&google",
++         "&bing",
++         "&yahoo_es",
++@@ -1041,6 +1135,7 @@
++       // Syria
++       "search_engines": [
++         "&duckduckgo",
+++        "&kagi",
++         "&google",
++         "&bing",
++         "&yandex_ru",
++@@ -1051,6 +1146,7 @@
++       // Thailand
++       "search_engines": [
++         "&duckduckgo",
+++        "&kagi",
++         "&google",
++         "&bing",
++         "&yahoo_th",
++@@ -1061,6 +1157,7 @@
++       // Tunisia
++       "search_engines": [
++         "&duckduckgo",
+++        "&kagi",
++         "&google",
++         "&bing",
++         "&yahoo_fr",
++@@ -1071,6 +1168,7 @@
++       // Turkey
++       "search_engines": [
++         "&duckduckgo",
+++        "&kagi",
++         "&google",
++         "&yandex_tr",
++         "&yahoo_tr",
++@@ -1081,6 +1179,7 @@
++       // Trinidad and Tobago
++       "search_engines": [
++         "&duckduckgo",
+++        "&kagi",
++         "&google",
++         "&bing",
++         "&yahoo",
++@@ -1091,6 +1190,7 @@
++       // Taiwan
++       "search_engines": [
++         "&duckduckgo",
+++        "&kagi",
++         "&google",
++         "&yahoo_tw",
++         "&bing",
++@@ -1102,6 +1202,7 @@
++       // Tanzania
++       "search_engines": [
++         "&duckduckgo",
+++        "&kagi",
++         "&google",
++         "&bing",
++         "&yahoo",
++@@ -1112,6 +1213,7 @@
++       // Ukraine
++       "search_engines": [
++         "&duckduckgo",
+++        "&kagi",
++         "&google",
++         "&yandex_ru",
++         "&bing",
++@@ -1122,6 +1224,7 @@
++       // United States
++       "search_engines": [
++         "&duckduckgo",
+++        "&kagi",
++         "&google",
++         "&bing",
++         "&yahoo",
++@@ -1132,6 +1235,7 @@
++       // Uruguay
++       "search_engines": [
++         "&duckduckgo",
+++        "&kagi",
++         "&google",
++         "&bing",
++         "&yahoo_es",
++@@ -1142,6 +1246,7 @@
++       // Venezuela
++       "search_engines": [
++         "&duckduckgo",
+++        "&kagi",
++         "&google",
++         "&bing",
++         "&yahoo_es",
++@@ -1152,6 +1257,7 @@
++       // Vietnam
++       "search_engines": [
++         "&duckduckgo",
+++        "&kagi",
++         "&google",
++         "&coccoc",
++         "&yahoo",
++@@ -1162,6 +1268,7 @@
++       // Yemen
++       "search_engines": [
++         "&duckduckgo",
+++        "&kagi",
++         "&google",
++         "&bing",
++         "&yahoo",
++@@ -1172,6 +1279,7 @@
++       // South Africa
++       "search_engines": [
++         "&duckduckgo",
+++        "&kagi",
++         "&google",
++         "&bing",
++         "&yahoo",
++@@ -1182,6 +1290,7 @@
++       // Zimbabwe
++       "search_engines": [
++         "&duckduckgo",
+++        "&kagi",
++         "&google",
++         "&bing",
++         "&yahoo",
++@@ -1195,6 +1304,7 @@
++       // Default
++       "search_engines": [
++         "&duckduckgo",
+++        "&kagi",
++         "&google",
++         "&bing",
++         "&yahoo"
+diff --git a/vanadium/subprojects_patches/third_party/search_engines_data/resources/0006-Increment-version-for-Kagi-addition.patch b/vanadium/subprojects_patches/third_party/search_engines_data/resources/0006-Increment-version-for-Kagi-addition.patch
+new file mode 100644
+index 0000000000000..e29913480087b
+--- /dev/null
++++ b/vanadium/subprojects_patches/third_party/search_engines_data/resources/0006-Increment-version-for-Kagi-addition.patch
+@@ -0,0 +1,21 @@
++From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
++From: Amaan Qureshi <git@amaanq.com>
++Date: Sat, 11 Jan 2026 00:00:00 +0000
++Subject: [PATCH] Increment version for Kagi addition
++
++Increment search engine data version to ensure Kagi appears in
++users' search engine lists.
++---
++
++diff --git a/definitions/prepopulated_engines.json b/definitions/prepopulated_engines.json
++--- a/definitions/prepopulated_engines.json
+++++ b/definitions/prepopulated_engines.json
++@@ -28,7 +28,7 @@
++     // existing data should get a new version. Otherwise, existing data may
++     // continue to be used and updates made here will not always appear.
++     // Also then run tools/search_engine_choice/generate_search_engine_icons.py.
++-    "kCurrentDataVersion": 193
+++    "kCurrentDataVersion": 194
++   },
++ 
++   // The following engines are included in country lists and are added to the
+-- 
+2.52.0
+
