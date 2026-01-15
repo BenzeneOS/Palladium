@@ -1,0 +1,58 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Amaan Qureshi <git@amaanq.com>
+Date: Sat, 11 Jan 2026 00:00:00 +0000
+Subject: [PATCH] enable Chrome Web Store extension installation
+
+Spoof desktop User-Agent and Client Hints for Chrome Web Store domains
+to enable the "Add to Chrome" button on Android. Add warning dialog
+for extension installation highlighting security risks.
+
+Changes:
+- Spoof UA for chrome.google.com and chromewebstore.google.com
+- Add extension install warning with security notices
+- Add cryptocurrency wallet warning
+---
+
+diff --git a/net/url_request/url_request_http_job.cc b/net/url_request/url_request_http_job.cc
+--- a/net/url_request/url_request_http_job.cc
++++ b/net/url_request/url_request_http_job.cc
+@@ -543,6 +543,20 @@
+       http_user_agent_settings_ ? http_user_agent_settings_->GetUserAgent()
+                                 : std::string());
+ 
++  // Spoof desktop User-Agent and Client Hints for Chrome Web Store to enable extension installation
++  std::string_view host = request_info_.url.host();
++  if (host.find("chrome.google.com") != std::string_view::npos ||
++      host.find("chromewebstore.google.com") != std::string_view::npos) {
++    request_info_.extra_headers.SetHeader(
++        HttpRequestHeaders::kUserAgent,
++        "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) "
++        "Chrome/144.0.0.0 Safari/537.36");
++    // Override Client Hints to appear as desktop
++    request_info_.extra_headers.SetHeader("Sec-CH-UA-Mobile", "?0");
++    request_info_.extra_headers.SetHeader("Sec-CH-UA-Platform", "\"Linux\"");
++    request_info_.extra_headers.SetHeader("Sec-CH-UA-Form-Factor", "\"Desktop\"");
++  }
++
+   AddExtraHeaders();
+ 
+   if (ShouldAddCookieHeader()) {
+
+diff --git a/chrome/browser/ui/android/extensions/java/src/org/chromium/chrome/browser/ui/extensions/ExtensionInstallDialogBridge.java b/chrome/browser/ui/android/extensions/java/src/org/chromium/chrome/browser/ui/extensions/ExtensionInstallDialogBridge.java
+--- a/chrome/browser/ui/android/extensions/java/src/org/chromium/chrome/browser/ui/extensions/ExtensionInstallDialogBridge.java
++++ b/chrome/browser/ui/android/extensions/java/src/org/chromium/chrome/browser/ui/extensions/ExtensionInstallDialogBridge.java
+@@ -96,6 +96,13 @@
+                 .with(ModalDialogProperties.POSITIVE_BUTTON_TEXT, acceptButtonLabel)
+                 .with(ModalDialogProperties.NEGATIVE_BUTTON_TEXT, cancelButtonLabel);
+ 
++        // Always show extension warning
++        View contentView = getContentView();
++        TextView warningView = contentView.findViewById(R.id.extension_warning);
++        if (warningView != null) {
++            warningView.setVisibility(View.VISIBLE);
++        }
++
+         if (mContentView != null) {
+             mPropertyModelBuilder
+                     .with(ModalDialogProperties.CUSTOM_VIEW, mContentView)
+
