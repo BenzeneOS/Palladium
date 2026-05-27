@@ -1,0 +1,29 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Amaan Qureshi <git@amaanq.com>
+Date: Wed, 19 Aug 2026 19:58:27 -0400
+Subject: [PATCH 5/5] Increment version for Kagi addition
+
+---
+ definitions/prepopulated_engines.json | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/definitions/prepopulated_engines.json b/definitions/prepopulated_engines.json
+index 7818713..c713f68 100644
+--- a/definitions/prepopulated_engines.json
++++ b/definitions/prepopulated_engines.json
+@@ -26,11 +26,11 @@
+ 
+     // Increment this if you change the data in ways that mean users with
+     // existing data should get a new version. Otherwise, existing data may
+     // continue to be used and updates made here will not always appear.
+     // Also then run tools/search_engine_choice/generate_search_engine_icons.py.
+-    "kCurrentDataVersion": 211
++    "kCurrentDataVersion": 212
+   },
+ 
+   // The following engines are included in country lists and are added to the
+   // list of search engines on the first run depending on user's country.
+   "elements": {
+-- 
+2.54.0
+
