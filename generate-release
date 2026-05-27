@@ -16,8 +16,10 @@ readonly APPS=(
 read -p "Enter keystore passphrase: " -s keystore_pass
 echo
 
+start=$PWD
 for d in "$@"; do
-    cd "$d/Default/apks"
+    cd "$start"
+    cd "$d/apks"
 
     rm -rf release
     mkdir release
@@ -29,5 +31,5 @@ for d in "$@"; do
         $APKSIGNER sign --ks $KEYSTORE --ks-pass file:/dev/stdin --ks-key-alias vanadium --in $input --out $app.apk <<< $keystore_pass || true
     done
 
-    cd ../../../..
+    cd "$start"
 done

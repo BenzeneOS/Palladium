@@ -1,0 +1,243 @@
+#!/usr/bin/env nu
+# v <subcommand> [args...]
+# Vanadium build helpers. Single dispatcher invoked from PATH
+
+def src-dir []: nothing -> string {
+    $env.VANADIUM_ROOT | path join src
+}
+
+def sign-apk [input: string, output: string] {
+    mkdir $env.VANADIUM_SIGNED_DIR
+    let sign_args = [
+        sign
+        '--ks' $env.VANADIUM_KEYSTORE
+        '--ks-key-alias' $env.VANADIUM_KS_ALIAS
+        '--ks-pass' $'pass:($env.VANADIUM_KS_PASS)'
+        '--key-pass' $'pass:($env.VANADIUM_KS_PASS)'
+        '--out' $output $input
+    ]
+    ^$env.VANADIUM_JAVA -jar $env.VANADIUM_APKSIGNER ...$sign_args
+}
+
+# build APK
+#
+# iter = fast component → chrome_public_apk
+# prod = trichrome      → trichrome_chrome_64_apk
+# dist = monolithic     → chrome_public_apk
+def "main build" [
+    ...args: string        # mode (iter|prod|dist) and/or a single ninja target
+    --jobs (-j): string    # forwarded to autoninja -j
+    --rbe-frac: string     # fraction of cores to use for local jobs
+    --nice (-n)            # run at lowest priority
+] {
+    hide-env -i _JAVA_OPTIONS LD_PRELOAD
+    if ($env.VANADIUM_MALLOC? | is-not-empty) { $env.LD_PRELOAD = $env.VANADIUM_MALLOC }
+    let jobs = $jobs | default ($env.VANADIUM_JOBS? | default '')
+    let rbe_frac = $rbe_frac | default ($env.VANADIUM_RBE_FRAC? | default '')
+    let modes = [iter prod dist]
+    let mode = ($args | where {|a| $a in $modes }).0? | default 'iter'
+    let tgt = ($args | where {|a| $a not-in $modes }).0?
+    let spec = match $mode {
+        'iter' => {dir: 'out/iter', tgts: [chrome_public_apk]}
+        # prod = the full four-apk release set
+        'prod' => {dir: 'out/palladium', tgts: [
+            trichrome_chrome_64_apk
+            trichrome_library_64_apk
+            trichrome_webview_64_apk
+            vanadium_config_apk
+        ]}
+        'dist' => {dir: 'out/dist', tgts: [chrome_public_apk]}
+    }
+    let tgts = if $tgt != null { [$tgt] } else { $spec.tgts }
+    mut ninja_args = []
+    if $jobs != '' { $ninja_args ++= ['-j' $jobs] }
+    # siso lacks reclient's fractional local-resource knob, so translate the
+    # fraction into an absolute -local_jobs count
+    if $rbe_frac != '' {
+        let local_jobs = [1 (($rbe_frac | into float) * (sys cpu | length) | math floor | into int)] | math max
+        $ninja_args ++= [$'-local_jobs=($local_jobs)']
+    }
+    let detail = [
+        $mode
+        (if $jobs != '' { $' -j ($jobs)' } else { '' })
+        (if $rbe_frac != '' { $' rbe=($rbe_frac)' } else { '' })
+    ] | str join ''
+    print $'[v build] ($tgts | str join " ") → src/($spec.dir) [($detail)]'
+    cd (src-dir)
+    # gclient runhooks regenerates .sisoenv with SISO_PROJECT=rbe-chrome-untrusted,
+    # which trips autoninja's Google-corp-account gate. Blank it so siso talks to
+    # our own cache (SISO_REAPI_ADDRESS) instead of Google RBE.
+    let sisoenv = 'build/config/siso/.sisoenv'
+    if ($sisoenv | path exists) {
+        let cleaned = open --raw $sisoenv | str replace -r '(?m)^SISO_PROJECT=.*' 'SISO_PROJECT='
+        $cleaned | save -f $sisoenv
+    }
+    # .sisorc is gitignored, so a fresh checkout would otherwise build with no
+    # remote cache at all. Recreate the cache-only flag set when it is missing.
+    let sisorc = 'build/config/siso/.sisorc'
+    if not ($sisorc | path exists) {
+        'ninja -reapi_address=scarp:50051 -reapi_instance=chromium -reapi_insecure -re_exec_enable=false -re_cache_enable_write -config=googlechrome' + (char nl) | save $sisorc
+    }
+    # priority must be set before exec. siso's spawn-helper setsids its workers,
+    # so renicing the build's process group afterwards misses every compiler
+    if $nice {
+        exec nice -n 19 autoninja -C $spec.dir ...$ninja_args ...$tgts
+    } else {
+        exec autoninja -C $spec.dir ...$ninja_args ...$tgts
+    }
+}
+
+# sign with dev keystore
+def "main sign" [input: string, output?: string]: nothing -> string {
+    let out = $output | default ($env.VANADIUM_SIGNED_DIR | path join ($input | path basename))
+    sign-apk $input $out
+    print $'[v sign] ($input | path basename) → ($out)'
+    $out
+}
+
+# sign+push trichrome to /product/app
+def "main push" [
+    --device (-s): string    # adb serial, defaults to VANADIUM_DEVICE
+    --no-reboot              # skip the userspace soft-reboot
+] {
+    let serial = $device | default $env.VANADIUM_DEVICE
+    let out = $env.VANADIUM_SIGNED_DIR | path join TrichromeChrome.apk
+    sign-apk ([(src-dir) out/palladium/apks/TrichromeChrome64.apk] | path join) $out | ignore
+    ^adb -s $serial root | complete | ignore
+    ^adb -s $serial remount | complete | ignore
+    ^adb -s $serial push $out /product/app/TrichromeChrome/TrichromeChrome.apk
+    if not $no_reboot {
+        ^adb -s $serial reboot userspace
+        print $'[v push] pushed → ($serial); soft-rebooting'
+    }
+}
+
+# sign+install monolithic via pm install --abi
+def "main install" [
+    --device (-s): string        # adb serial, defaults to VANADIUM_DEVICE
+    --mode (-m): string = 'iter' # iter or dist
+] {
+    let serial = $device | default $env.VANADIUM_DEVICE
+    let dir = match $mode {
+        'iter' => 'out/iter'
+        'dist' => 'out/dist'
+        _ => (error make {msg: $"v install: mode '($mode)' not monolithic"})
+    }
+    let out = $env.VANADIUM_SIGNED_DIR | path join $'Vanadium-($mode).apk'
+    sign-apk ([(src-dir) $dir apks ChromePublic.apk] | path join) $out | ignore
+    ^adb -s $serial install -r --abi arm64-v8a $out
+    print $'[v install] installed → ($serial)'
+}
+
+# forward chrome devtools, restart Vanadium
+def "main devtools" [
+    --device (-s): string    # adb serial, defaults to VANADIUM_DEVICE
+    --port (-p): int = 9222  # local forward port
+] {
+    let serial = $device | default $env.VANADIUM_DEVICE
+    ^adb -s $serial shell "echo 'chrome --remote-allow-origins=*' > /data/local/tmp/chrome-command-line"
+    ^adb -s $serial forward --remove-all | complete | ignore
+    ^adb -s $serial forward $'tcp:($port)' localabstract:chrome_devtools_remote
+    ^adb -s $serial shell am force-stop app.vanadium.browser
+    ^adb -s $serial shell am start -n app.vanadium.browser/com.google.android.apps.chrome.Main | complete | ignore
+    print $'[v devtools] http://localhost:($port)/json'
+}
+
+# list adb devices
+def "main devices" [] {
+    ^adb devices -l
+}
+
+# show out/ dirs + apk counts
+def "main status" []: nothing -> table {
+    let out_root = (src-dir) | path join out
+    do -i { ls $out_root } | default [] | where type == dir | each {|d|
+        {
+            out: ($d.name | path basename)
+            apks: (glob ($d.name | path join 'apks/*.apk') | length)
+            args_gn: (do -i { ls ($d.name | path join args.gn) | get 0.modified })
+        }
+    }
+}
+
+# prove src commits match patch files (last n, default all)
+def "main verify" [n: int = 0] {
+    cd (src-dir)
+    let all = glob ($env.VANADIUM_ROOT | path join 'patches/*.patch') | sort
+    let plist = if $n > 0 { $all | last $n } else { $all }
+    let total = $plist | length
+    let commits = ^git rev-list --reverse $'HEAD~($total)..HEAD' | lines
+    if ($commits | length) != $total {
+        error make {msg: $'v verify: ($total) patches but ($commits | length) commits'}
+    }
+    # applying each patch to a scratch index and comparing tree hashes proves
+    # byte-exact derivation. a clean git am alone proves nothing
+    $env.GIT_INDEX_FILE = (^mktemp | str trim)
+    let base = ^git rev-parse $'($commits.0)^' | str trim
+    ^git read-tree ($base + '^{tree}')
+    let results = $plist | zip $commits | enumerate | each {|it|
+        let patch = $it.item.0
+        let commit = $it.item.1
+        print -en $"\r[v verify] ($it.index + 1)/($total)"
+        let applied = ^git apply --cached --whitespace=nowarn $patch | complete
+        if $applied.exit_code != 0 {
+            print -e ''
+            print $'APPLYFAIL ($patch | path basename)'
+            ^git read-tree ($commit + '^{tree}')
+            false
+        } else {
+            let got = ^git write-tree | str trim
+            let want = ^git rev-parse ($commit + '^{tree}') | str trim
+            if $got == $want {
+                true
+            } else {
+                print -e ''
+                let subject = ^git log -1 '--format=%h %s' $commit | str trim
+                print $'MISMATCH  ($patch | path basename) != ($subject)'
+                ^git diff --stat $got $want | lines | each {|l| print $'    ($l)' }
+                ^git read-tree ($commit + '^{tree}')
+                false
+            }
+        }
+    }
+    print -e ''
+    rm -f $env.GIT_INDEX_FILE
+    if ($results | all {|r| $r }) {
+        print $'[v verify] ($total) patches == ($total) commits, tree-exact'
+    } else {
+        exit 1
+    }
+}
+
+# tail logcat
+def "main log" [
+    --device (-s): string    # adb serial, defaults to VANADIUM_DEVICE
+    --grep (-g): string      # case-insensitive filter pattern
+] {
+    let serial = $device | default $env.VANADIUM_DEVICE
+    if $grep != null {
+        ^adb -s $serial logcat -v time | ^grep -i $grep
+    } else {
+        ^adb -s $serial logcat -v time -s 'chromium:*' 'DEBUG:*' 'AndroidRuntime:*' 'libc:*' '*:S'
+    }
+}
+
+def main [] {
+    print r#'v <subcommand> [args...]
+
+  build [iter|prod|dist] [target]   build APK
+                                    iter = fast component → chrome_public_apk
+                                    prod = trichrome      → trichrome_chrome_64_apk
+                                    dist = monolithic     → chrome_public_apk
+  sign <input.apk> [output.apk]     sign with dev keystore
+  push [-s serial] [--no-reboot]    sign+push trichrome to /product/app
+  install [-s serial] [-m iter|dist]  sign+install monolithic via pm install --abi
+  devtools [-s serial] [-p port]    forward chrome devtools, restart Vanadium
+  devices                           list adb devices
+  status                            show out/ dirs + apk counts
+  verify [n]                        prove src commits match patch files (last n, default all)
+  log [-s serial] [-g pattern]      tail logcat
+'#
+    print $'env: VANADIUM_DEVICE=($env.VANADIUM_DEVICE? | default "")'
+    exit 1
+}
