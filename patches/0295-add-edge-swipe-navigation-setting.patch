@@ -1,0 +1,539 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Amaan Qureshi <git@amaanq.com>
+Date: Sun, 11 Jan 2026 00:00:00 +0000
+Subject: [PATCH] add edge swipe navigation setting
+
+Add a 3-option setting for edge swipe navigation in Accessibility settings:
+- Disabled: No edge swipe navigation
+- Back only: Left edge swipe goes back (default Chrome behavior)
+- Back & Forward: Left edge = back, Right edge = forward
+
+This provides better UX than a simple toggle or chrome://flags.
+---
+ .../chrome/browser/SwipeRefreshHandler.java   |  6 ++
+ .../browser/gesturenav/NavigationHandler.java |  8 ++-
+ .../browser/toolbar/ToolbarManager.java       | 58 +++++++++++-------
+ .../browser_ui/accessibility/android/BUILD.gn |  3 +
+ .../android/java/res/values/arrays.xml        | 14 +++++
+ .../android/java/res/values/strings.xml       | 12 ++++
+ .../res/xml/accessibility_preferences.xml     |  8 +++
+ .../accessibility/AccessibilitySettings.java  | 34 +++++++++++
+ .../EdgeSwipeNavigationUtils.java             | 60 +++++++++++++++++++
+ 9 files changed, 181 insertions(+), 22 deletions(-)
+ create mode 100644 components/browser_ui/accessibility/android/java/res/values/arrays.xml
+ create mode 100644 components/browser_ui/accessibility/android/java/res/values/strings.xml
+ create mode 100644 components/browser_ui/accessibility/android/java/src/org/chromium/components/browser_ui/accessibility/EdgeSwipeNavigationUtils.java
+
+diff --git a/chrome/android/java/src/org/chromium/chrome/browser/SwipeRefreshHandler.java b/chrome/android/java/src/org/chromium/chrome/browser/SwipeRefreshHandler.java
+index 1b24b3447c1b5..4006431c2da83 100644
+--- a/chrome/android/java/src/org/chromium/chrome/browser/SwipeRefreshHandler.java
++++ b/chrome/android/java/src/org/chromium/chrome/browser/SwipeRefreshHandler.java
+@@ -27,10 +27,11 @@ import org.chromium.chrome.R;
+ import org.chromium.chrome.browser.browser_controls.BottomOverscrollHandler;
+ import org.chromium.chrome.browser.gesturenav.HistoryNavigationCoordinator;
+ import org.chromium.chrome.browser.tab.EmptyTabObserver;
+ import org.chromium.chrome.browser.tab.Tab;
+ import org.chromium.chrome.browser.tab.TabWebContentsUserData;
++import org.chromium.components.browser_ui.accessibility.EdgeSwipeNavigationUtils;
+ import org.chromium.components.browser_ui.styles.SemanticColorUtils;
+ import org.chromium.content_public.browser.WebContents;
+ import org.chromium.third_party.android.swiperefresh.SwipeRefreshLayout;
+ import org.chromium.ui.OverscrollAction;
+ import org.chromium.ui.OverscrollActivationStatus;
+@@ -265,10 +266,15 @@ public class SwipeRefreshHandler extends TabWebContentsUserData
+             if (mSwipeRefreshLayout == null) initSwipeRefreshLayout(mTab.getContext());
+             assumeNonNull(mSwipeRefreshLayout);
+             attachSwipeRefreshLayoutIfNecessary();
+             return mSwipeRefreshLayout.start();
+         } else if (type == OverscrollAction.HISTORY_NAVIGATION) {
++            // Vanadium: Check if edge swipe navigation is enabled
++            if (!EdgeSwipeNavigationUtils.isEdgeSwipeEnabled()) {
++                mSwipeType = OverscrollAction.NONE;
++                return false;
++            }
+             if (mNavigationCoordinator != null) {
+                 mNavigationCoordinator.startGesture();
+                 // Note: triggerUi returns true as long as the handler is in a valid state, i.e.
+                 // even if the navigation direction doesn't have further history entries.
+                 boolean navigable = mNavigationCoordinator.triggerUi(initiatingEdge);
+diff --git a/chrome/android/java/src/org/chromium/chrome/browser/gesturenav/NavigationHandler.java b/chrome/android/java/src/org/chromium/chrome/browser/gesturenav/NavigationHandler.java
+index 97b38b2fe13bf..152916114e82b 100644
+--- a/chrome/android/java/src/org/chromium/chrome/browser/gesturenav/NavigationHandler.java
++++ b/chrome/android/java/src/org/chromium/chrome/browser/gesturenav/NavigationHandler.java
+@@ -36,10 +36,11 @@ import org.chromium.chrome.browser.gesturenav.BackActionDelegate.ActionType;
+ import org.chromium.chrome.browser.gesturenav.NavigationBubble.CloseTarget;
+ import org.chromium.chrome.browser.tab.EmptyTabObserver;
+ import org.chromium.chrome.browser.tab.Tab;
+ import org.chromium.chrome.browser.tab.TabBrowserControlsConstraintsHelper;
+ import org.chromium.chrome.browser.tab.TabObserver;
++import org.chromium.components.browser_ui.accessibility.EdgeSwipeNavigationUtils;
+ import org.chromium.components.browser_ui.widget.TouchEventObserver;
+ import org.chromium.content_public.browser.NavigationHandle;
+ import org.chromium.ui.OverscrollActivationStatus;
+ import org.chromium.ui.base.BackGestureEventSwipeEdge;
+ import org.chromium.ui.base.LocalizationUtils;
+@@ -226,11 +227,13 @@ class NavigationHandler implements TouchEventObserver {
+         }
+         return false;
+     }
+ 
+     private boolean shouldProcessTouchEvents() {
+-        return mTab != null && mTab.isNativePage();
++        return mTab != null
++                && mTab.isNativePage()
++                && EdgeSwipeNavigationUtils.isEdgeSwipeEnabled();
+     }
+ 
+     /**
+      * @see GestureDetector#SimpleOnGestureListener#onDown(MotionEvent)
+      */
+@@ -384,10 +387,13 @@ class NavigationHandler implements TouchEventObserver {
+         if (mTab == null) return false;
+         return forward ? mTab.canGoForward() : mTab.canGoBack();
+     }
+ 
+     private boolean canNavigate(boolean forward) {
++        if (forward && !EdgeSwipeNavigationUtils.isRightEdgeForwardEnabled()) {
++            return false;
++        }
+         // Navigating back is considered always possible (actual navigation, closing
+         // tab, or exiting app).
+         return !forward || (mTab != null && mTab.canGoForward());
+     }
+ 
+diff --git a/chrome/android/java/src/org/chromium/chrome/browser/toolbar/ToolbarManager.java b/chrome/android/java/src/org/chromium/chrome/browser/toolbar/ToolbarManager.java
+index 848714edf045e..6e928375e3c5f 100644
+--- a/chrome/android/java/src/org/chromium/chrome/browser/toolbar/ToolbarManager.java
++++ b/chrome/android/java/src/org/chromium/chrome/browser/toolbar/ToolbarManager.java
+@@ -92,11 +92,10 @@ import org.chromium.chrome.browser.findinpage.FindToolbarManager;
+ import org.chromium.chrome.browser.findinpage.FindToolbarObserver;
+ import org.chromium.chrome.browser.flags.ActivityType;
+ import org.chromium.chrome.browser.flags.ChromeFeatureList;
+ import org.chromium.chrome.browser.fullscreen.FullscreenManager;
+ import org.chromium.chrome.browser.fullscreen.FullscreenOptions;
+-import org.chromium.chrome.browser.gesturenav.GestureNavigationUtils;
+ import org.chromium.chrome.browser.gesturenav.OverscrollGlowCoordinator;
+ import org.chromium.chrome.browser.gesturenav.TabOnBackGestureHandler;
+ import org.chromium.chrome.browser.glic.GlicButtonDelegate;
+ import org.chromium.chrome.browser.glic.GlicKeyedService.GlicInvocationSource;
+ import org.chromium.chrome.browser.glic.GlicUtils;
+@@ -229,10 +228,11 @@ import org.chromium.chrome.browser.ui.system.StatusBarColorController;
+ import org.chromium.chrome.browser.ui.theme.BrandedColorScheme;
+ import org.chromium.chrome.browser.undo_tab_close_snackbar.UndoBarThrottle;
+ import org.chromium.chrome.browser.user_education.UserEducationHelper;
+ import org.chromium.chrome.browser.util.BrowserUiUtils;
+ import org.chromium.chrome.browser.util.BrowserUiUtils.ModuleTypeOnStartAndNtp;
++import org.chromium.components.browser_ui.accessibility.EdgeSwipeNavigationUtils;
+ import org.chromium.components.browser_ui.accessibility.PageZoomManager;
+ import org.chromium.components.browser_ui.bottomsheet.BottomSheetController;
+ import org.chromium.components.browser_ui.bottomsheet.BottomSheetControllerProvider;
+ import org.chromium.components.browser_ui.desktop_windowing.DesktopWindowStateManager;
+ import org.chromium.components.browser_ui.device_lock.DeviceLockActivityLauncher;
+@@ -263,10 +263,11 @@ import org.chromium.ui.UiUtils;
+ import org.chromium.ui.animation.transition.ShrinkTransition;
+ import org.chromium.ui.base.ActivityResultTracker;
+ import org.chromium.ui.base.ActivityWindowAndroid;
+ import org.chromium.ui.base.BackGestureEventSwipeEdge;
+ import org.chromium.ui.base.DeviceFormFactor;
++import org.chromium.ui.base.LocalizationUtils;
+ import org.chromium.ui.base.WindowAndroid;
+ import org.chromium.ui.display.DisplayUtil;
+ import org.chromium.ui.modaldialog.ModalDialogManager;
+ import org.chromium.ui.modelutil.PropertyModel;
+ import org.chromium.ui.resources.Resource;
+@@ -545,10 +546,11 @@ public class ToolbarManager
+ 
+     private class OnBackPressHandler implements BackPressHandler {
+         private @Nullable TabOnBackGestureHandler mHandler;
+         private boolean mIsGestureMode;
+         private @BackGestureEventSwipeEdge int mInitialEdge;
++        private boolean mIsForwardGesture;
+         private boolean mIsInProgress;
+ 
+         @Override
+         public boolean invokeBackActionOnEscape() {
+             // Escape key presses should not navigate back in tab history. We do not also implement
+@@ -570,10 +572,16 @@ public class ToolbarManager
+             int res = BackPressResult.SUCCESS;
+ 
+             if (mHandler != null) {
+                 assert mIsGestureMode : "Must be in gesture mode if transition handler is alive";
+                 mHandler.onBackInvoked(mIsGestureMode);
++            } else if (mIsForwardGesture) {
++                res =
++                        ToolbarManager.this.forward()
++                                ? BackPressResult.SUCCESS
++                                : BackPressResult.FAILURE;
++                ToolbarManager.this.onBackPressStateChanged();
+             } else {
+                 res = ToolbarManager.this.handleBackPress();
+             }
+             mBackGestureInProgress = false;
+             mIsGestureMode = false;
+@@ -626,16 +634,17 @@ public class ToolbarManager
+             mHandler.onBackProgressed(
+                     backEvent.getProgress(),
+                     backEvent.getSwipeEdge() == BackEventCompat.EDGE_LEFT
+                             ? BackGestureEventSwipeEdge.LEFT
+                             : BackGestureEventSwipeEdge.RIGHT,
+-                    isForward(),
++                    isForward(backEvent),
+                     mIsGestureMode);
+         }
+ 
+         @Override
+         public void handleOnBackStarted(BackEventCompat backEvent) {
++            mIsForwardGesture = isForward(backEvent);
+             if (mOverscrollGlowCoordinator != null && mOverscrollGlowCoordinator.isShowing()) {
+                 mOverscrollGlowCoordinator.resetGlow();
+             }
+ 
+             mIsInProgress = true;
+@@ -654,13 +663,13 @@ public class ToolbarManager
+             }
+ 
+             mStartNavDuringOngoingGesture = false;
+             mBackGestureInProgress = true;
+ 
+-            assert tab.canGoBack()
++            assert isForward(backEvent) ? tab.canGoForward() : tab.canGoBack()
+                     : String.format(
+-                            "Should be able to navigate back; edge %s; gesture mode %s",
++                            "Should be able to navigate; edge %s; gesture mode %s",
+                             backEvent.getSwipeEdge(), mIsGestureMode);
+ 
+             // This means the user is pressing a back button in 3-button mode.
+             // The transition should only be triggered by swipe rather than a button press.
+             // TODO(crbug.com/376306986): add some tests to ensure the this handler is not
+@@ -676,31 +685,21 @@ public class ToolbarManager
+                 mHandler.onBackStarted(
+                         backEvent.getProgress(),
+                         backEvent.getSwipeEdge() == BackEventCompat.EDGE_LEFT
+                                 ? BackGestureEventSwipeEdge.LEFT
+                                 : BackGestureEventSwipeEdge.RIGHT,
+-                        isForward(),
++                        isForward(backEvent),
+                         mIsGestureMode);
+             }
+             if (mIsGestureMode) {
+                 BackPressMetrics.recordPredictiveGestureNav(
+                         withTransition, PredictiveGestureNavPhase.ACTIVATED);
+             }
+         }
+ 
+         private boolean shouldStartTransition(BackEventCompat backEvent) {
+-            Tab tab = mActivityTabProvider.get();
+-            if (!mIsGestureMode || tab == null) return false;
+-            if (!GestureNavigationUtils.allowTransition(tab, false)) {
+-                return false;
+-            }
+-
+-            final boolean navigateForward = isForward();
+-            final boolean navigable = navigateForward ? tab.canGoForward() : tab.canGoBack();
+-            return navigable
+-                    && TabOnBackGestureHandler.shouldAnimateNavigationTransition(
+-                            navigateForward, backEvent.getSwipeEdge());
++            return true;
+         }
+     }
+ 
+     /**
+      * Creates a ToolbarManager object.
+@@ -3733,11 +3732,22 @@ public class ToolbarManager
+         sttsCoordinator.show();
+     }
+ 
+     private void onBackPressStateChanged() {
+         Tab tab = mActivityTabProvider.get();
+-        mBackPressStateSupplier.set(tab != null && mToolbarTabController.canGoBack());
++        if (tab == null) {
++            mBackPressStateSupplier.set(false);
++            return;
++        }
++        if (UiUtils.isGestureNavigationMode(mActivity.getWindow())
++                && !EdgeSwipeNavigationUtils.isEdgeSwipeEnabled()) {
++            mBackPressStateSupplier.set(false);
++            return;
++        }
++        boolean canGoForward =
++                EdgeSwipeNavigationUtils.isRightEdgeForwardEnabled() && tab.canGoForward();
++        mBackPressStateSupplier.set(mToolbarTabController.canGoBack() || canGoForward);
+     }
+ 
+     private void onBackForwardTransitionAnimationChange() {
+         Tab tab = mActivityTabProvider.get();
+         final boolean nativeDrawsProgressBar =
+@@ -3885,14 +3895,20 @@ public class ToolbarManager
+ 
+     public @Nullable ToggleTabStackButtonCoordinator getTabSwitcherButtonCoordinatorForTesting() {
+         return mTabSwitcherButtonCoordinator;
+     }
+ 
+-    private boolean isForward() {
+-        // Gestural navigation navigates backwards from both edges since this is an OS-level
+-        // gesture; users expect both edges to take them back.
+-        return false;
++    private boolean isForward(BackEventCompat backEvent) {
++        Tab tab = mActivityTabProvider.get();
++        int forwardEdge =
++                LocalizationUtils.shouldMirrorBackForwardGestures()
++                        ? BackEventCompat.EDGE_LEFT
++                        : BackEventCompat.EDGE_RIGHT;
++        return backEvent.getSwipeEdge() == forwardEdge
++                && EdgeSwipeNavigationUtils.isRightEdgeForwardEnabled()
++                && tab != null
++                && tab.canGoForward();
+     }
+ 
+     /**
+      * Sets a Supplier which provides the current height of the bookmark bar when read.
+      *
+diff --git a/components/browser_ui/accessibility/android/BUILD.gn b/components/browser_ui/accessibility/android/BUILD.gn
+index 06531bf1b75b9..b6bc8d176837b 100644
+--- a/components/browser_ui/accessibility/android/BUILD.gn
++++ b/components/browser_ui/accessibility/android/BUILD.gn
+@@ -39,10 +39,11 @@ android_library("lib_java") {
+   srcjar_deps = [ ":accessibility_jni_headers" ]
+   sources = [
+     "java/src/org/chromium/components/browser_ui/accessibility/AccessibilitySettings.java",
+     "java/src/org/chromium/components/browser_ui/accessibility/AccessibilitySettingsDelegate.java",
+     "java/src/org/chromium/components/browser_ui/accessibility/DeviceAccessibilitySettingsHandler.java",
++    "java/src/org/chromium/components/browser_ui/accessibility/EdgeSwipeNavigationUtils.java",
+     "java/src/org/chromium/components/browser_ui/accessibility/FontSizePrefs.java",
+     "java/src/org/chromium/components/browser_ui/accessibility/PageZoomBarCoordinator.java",
+     "java/src/org/chromium/components/browser_ui/accessibility/PageZoomBarCoordinatorDelegate.java",
+     "java/src/org/chromium/components/browser_ui/accessibility/PageZoomBarMediator.java",
+     "java/src/org/chromium/components/browser_ui/accessibility/PageZoomBarViewBinder.java",
+@@ -120,11 +121,13 @@ android_resources("java_resources") {
+     "java/res/layout/page_zoom_legacy_preference.xml",
+     "java/res/layout/page_zoom_preference.xml",
+     "java/res/layout/page_zoom_slider.xml",
+     "java/res/layout/page_zoom_view.xml",
+     "java/res/layout/text_size_contrast_slider.xml",
++    "java/res/values/arrays.xml",
+     "java/res/values/dimens.xml",
++    "java/res/values/strings.xml",
+     "java/res/values/styles.xml",
+     "java/res/xml/accessibility_preferences.xml",
+   ]
+ 
+   deps = [
+diff --git a/components/browser_ui/accessibility/android/java/res/values/arrays.xml b/components/browser_ui/accessibility/android/java/res/values/arrays.xml
+new file mode 100644
+index 0000000000000..ae0823497dc00
+--- /dev/null
++++ b/components/browser_ui/accessibility/android/java/res/values/arrays.xml
+@@ -0,0 +1,14 @@
++<?xml version="1.0" encoding="utf-8"?>
++<!-- Copyright 2026 The Vanadium Authors. All rights reserved. -->
++<resources>
++    <string-array name="edge_swipe_navigation_entries">
++        <item>@string/edge_swipe_navigation_disabled</item>
++        <item>@string/edge_swipe_navigation_back_only</item>
++        <item>@string/edge_swipe_navigation_back_and_forward</item>
++    </string-array>
++    <string-array name="edge_swipe_navigation_values">
++        <item>disabled</item>
++        <item>back_only</item>
++        <item>back_and_forward</item>
++    </string-array>
++</resources>
+diff --git a/components/browser_ui/accessibility/android/java/res/values/strings.xml b/components/browser_ui/accessibility/android/java/res/values/strings.xml
+new file mode 100644
+index 0000000000000..83e8a3aeacf18
+--- /dev/null
++++ b/components/browser_ui/accessibility/android/java/res/values/strings.xml
+@@ -0,0 +1,12 @@
++<?xml version="1.0" encoding="utf-8"?>
++<!-- Copyright 2026 The Vanadium Authors. All rights reserved. -->
++<resources>
++    <!-- Edge swipe navigation settings -->
++    <string name="edge_swipe_navigation_title">Edge swipe navigation</string>
++    <string name="edge_swipe_navigation_summary">Swipe from screen edges to navigate</string>
++
++    <!-- Edge swipe navigation options -->
++    <string name="edge_swipe_navigation_disabled">Disabled</string>
++    <string name="edge_swipe_navigation_back_only">Back only (left edge)</string>
++    <string name="edge_swipe_navigation_back_and_forward">Back and forward (both edges)</string>
++</resources>
+diff --git a/components/browser_ui/accessibility/android/java/res/xml/accessibility_preferences.xml b/components/browser_ui/accessibility/android/java/res/xml/accessibility_preferences.xml
+index 507691c7808e2..7bb8de254d5e5 100644
+--- a/components/browser_ui/accessibility/android/java/res/xml/accessibility_preferences.xml
++++ b/components/browser_ui/accessibility/android/java/res/xml/accessibility_preferences.xml
+@@ -57,6 +57,14 @@ found in the LICENSE file.
+     <org.chromium.components.browser_ui.settings.ChromeSwitchPreference
+         android:key="touchpad_overscroll_history_navigation"
+         android:summary="@string/touchpad_overscroll_history_navigation_summary"
+         android:title="@string/touchpad_overscroll_history_navigation_title" />
+ 
++    <ListPreference
++        android:key="edge_swipe_navigation"
++        android:title="@string/edge_swipe_navigation_title"
++        android:summary="@string/edge_swipe_navigation_summary"
++        android:defaultValue="back_and_forward"
++        android:entries="@array/edge_swipe_navigation_entries"
++        android:entryValues="@array/edge_swipe_navigation_values" />
++
+ </PreferenceScreen>
+diff --git a/components/browser_ui/accessibility/android/java/src/org/chromium/components/browser_ui/accessibility/AccessibilitySettings.java b/components/browser_ui/accessibility/android/java/src/org/chromium/components/browser_ui/accessibility/AccessibilitySettings.java
+index efd95615c9890..fdbcd3383b7a1 100644
+--- a/components/browser_ui/accessibility/android/java/src/org/chromium/components/browser_ui/accessibility/AccessibilitySettings.java
++++ b/components/browser_ui/accessibility/android/java/src/org/chromium/components/browser_ui/accessibility/AccessibilitySettings.java
+@@ -11,10 +11,11 @@ import android.content.Context;
+ import android.content.Intent;
+ import android.os.Bundle;
+ import android.provider.Settings;
+ 
+ import androidx.annotation.VisibleForTesting;
++import androidx.preference.ListPreference;
+ import androidx.preference.Preference;
+ import androidx.preference.PreferenceFragmentCompat;
+ 
+ import org.chromium.base.ContextUtils;
+ import org.chromium.base.metrics.RecordHistogram;
+@@ -62,10 +63,11 @@ public class AccessibilitySettings extends PreferenceFragmentCompat
+     public static final String PREF_ZOOM_INFO = "zoom_info";
+     public static final String PREF_IMAGE_DESCRIPTIONS = "image_descriptions";
+     public static final String PREF_CARET_BROWSING = "caret_browsing";
+     public static final String PREF_TOUCHPAD_OVERSCROLL_HISTORY_NAVIGATION =
+             "touchpad_overscroll_history_navigation";
++    public static final String PREF_EDGE_SWIPE_NAVIGATION = "edge_swipe_navigation";
+ 
+     @VisibleForTesting
+     final DistilledPagePrefs.Observer mDistilledPagePrefsObserver =
+             new DistilledPagePrefs.Observer() {
+                 @Override
+@@ -92,10 +94,11 @@ public class AccessibilitySettings extends PreferenceFragmentCompat
+     private ChromeSwitchPreference mCaretBrowsingPref;
+     private ChromeSwitchPreference mJumpStartOmnibox;
+     private @Nullable AccessibilitySettingsDelegate mDelegate;
+     private double mPageZoomLatestDefaultZoomPrefValue;
+     private ChromeSwitchPreference mTouchpadOverscrollHistoryNavigationPref;
++    private ListPreference mEdgeSwipeNavigationPref;
+     private @Nullable DistilledPagePrefs mDistilledPagePrefs;
+     private @Nullable PrefChangeRegistrar mPrefChangeRegistrar;
+     private @Nullable PrefObserver mPrefObserver;
+ 
+     private final SettableMonotonicObservableSupplier<String> mPageTitle =
+@@ -239,10 +242,37 @@ public class AccessibilitySettings extends PreferenceFragmentCompat
+             mPrefChangeRegistrar =
+                     new PrefChangeRegistrar(UserPrefs.get(mDelegate.getBrowserContextHandle()));
+             mPrefObserver = this::updateCaretBrowsingPref;
+             mPrefChangeRegistrar.addObserver(caretBrowsingKey, mPrefObserver);
+         }
++
++        // Edge swipe navigation setting
++        mEdgeSwipeNavigationPref = findPreference(PREF_EDGE_SWIPE_NAVIGATION);
++        if (mEdgeSwipeNavigationPref != null) {
++            String currentValue = EdgeSwipeNavigationUtils.getEdgeSwipeNavigationMode();
++            mEdgeSwipeNavigationPref.setValue(currentValue);
++            updateEdgeSwipeNavigationSummary(currentValue);
++            mEdgeSwipeNavigationPref.setOnPreferenceChangeListener(this);
++        }
++    }
++
++    private void updateEdgeSwipeNavigationSummary(String value) {
++        if (mEdgeSwipeNavigationPref == null) return;
++        int summaryResId;
++        switch (value) {
++            case EdgeSwipeNavigationUtils.MODE_DISABLED:
++                summaryResId = R.string.edge_swipe_navigation_disabled;
++                break;
++            case EdgeSwipeNavigationUtils.MODE_BACK_ONLY:
++                summaryResId = R.string.edge_swipe_navigation_back_only;
++                break;
++            case EdgeSwipeNavigationUtils.MODE_BACK_AND_FORWARD:
++            default:
++                summaryResId = R.string.edge_swipe_navigation_back_and_forward;
++                break;
++        }
++        mEdgeSwipeNavigationPref.setSummary(summaryResId);
+     }
+ 
+     @Override
+     public void onDestroy() {
+         if (mPrefChangeRegistrar != null) {
+@@ -314,10 +344,14 @@ public class AccessibilitySettings extends PreferenceFragmentCompat
+             mDelegate.setCaretBrowsingEnabled((Boolean) newValue);
+         } else if (PREF_TOUCHPAD_OVERSCROLL_HISTORY_NAVIGATION.equals(preference.getKey())) {
+             mDelegate
+                     .getTouchpadOverscrollHistoryNavigationAccessibilityDelegate()
+                     .setValue((Boolean) newValue);
++        } else if (PREF_EDGE_SWIPE_NAVIGATION.equals(preference.getKey())) {
++            String value = (String) newValue;
++            EdgeSwipeNavigationUtils.setEdgeSwipeNavigationMode(value);
++            updateEdgeSwipeNavigationSummary(value);
+         }
+         return true;
+     }
+ 
+     @Override
+diff --git a/components/browser_ui/accessibility/android/java/src/org/chromium/components/browser_ui/accessibility/EdgeSwipeNavigationUtils.java b/components/browser_ui/accessibility/android/java/src/org/chromium/components/browser_ui/accessibility/EdgeSwipeNavigationUtils.java
+new file mode 100644
+index 0000000000000..f46ae346c6e33
+--- /dev/null
++++ b/components/browser_ui/accessibility/android/java/src/org/chromium/components/browser_ui/accessibility/EdgeSwipeNavigationUtils.java
+@@ -0,0 +1,60 @@
++// Copyright 2026 The Vanadium Authors. All rights reserved.
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++package org.chromium.components.browser_ui.accessibility;
++
++import org.chromium.base.ContextUtils;
++
++/**
++ * Utility class for edge swipe navigation settings.
++ *
++ * Provides three modes:
++ * - disabled: No edge swipe navigation
++ * - back_only: Left edge swipe goes back (default Chrome behavior)
++ * - back_and_forward: Left edge = back, Right edge = forward
++ */
++public class EdgeSwipeNavigationUtils {
++    private static final String PREF_KEY = "edge_swipe_navigation_mode";
++
++    public static final String MODE_DISABLED = "disabled";
++    public static final String MODE_BACK_ONLY = "back_only";
++    public static final String MODE_BACK_AND_FORWARD = "back_and_forward";
++
++    // Default to back_and_forward for better UX
++    private static final String DEFAULT_MODE = MODE_BACK_AND_FORWARD;
++
++    /**
++     * Get the current edge swipe navigation mode.
++     * @return One of MODE_DISABLED, MODE_BACK_ONLY, or MODE_BACK_AND_FORWARD
++     */
++    public static String getEdgeSwipeNavigationMode() {
++        return ContextUtils.getAppSharedPreferences().getString(PREF_KEY, DEFAULT_MODE);
++    }
++
++    /**
++     * Set the edge swipe navigation mode.
++     * @param mode One of MODE_DISABLED, MODE_BACK_ONLY, or MODE_BACK_AND_FORWARD
++     */
++    public static void setEdgeSwipeNavigationMode(String mode) {
++        ContextUtils.getAppSharedPreferences().edit().putString(PREF_KEY, mode).apply();
++    }
++
++    /**
++     * Check if edge swipe navigation is enabled at all.
++     * @return true if any edge swipe navigation is enabled
++     */
++    public static boolean isEdgeSwipeEnabled() {
++        String mode = getEdgeSwipeNavigationMode();
++        return !MODE_DISABLED.equals(mode);
++    }
++
++    /**
++     * Check if right edge forward navigation is enabled.
++     * @return true if swiping from right edge should go forward
++     */
++    public static boolean isRightEdgeForwardEnabled() {
++        String mode = getEdgeSwipeNavigationMode();
++        return MODE_BACK_AND_FORWARD.equals(mode);
++    }
++}
+-- 
+2.54.0
+
