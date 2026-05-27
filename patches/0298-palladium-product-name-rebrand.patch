@@ -1,0 +1,48 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Amaan Qureshi <git@amaanq.com>
+Date: Wed, 27 May 2026 00:00:00 +0000
+Subject: [PATCH] rebrand the product display name to Palladium
+
+---
+diff --git a/chrome/app/chromium_strings.grd b/chrome/app/chromium_strings.grd
+index 960ab482eda28..48a65085e5c44 100644
+--- a/chrome/app/chromium_strings.grd
++++ b/chrome/app/chromium_strings.grd
+@@ -292,14 +292,14 @@ If you update this file, be sure also to update google_chrome_strings.grd. -->
+             Vanadium for Testing
+           </message>
+         </then>
+         <else>
+           <message name="IDS_PRODUCT_NAME" desc="The Vanadium application name" translateable="false">
+-            Vanadium
++            Palladium
+           </message>
+           <message name="IDS_SHORT_PRODUCT_NAME" desc="The Vanadium application short name." translateable="false">
+-            Vanadium
++            Palladium
+           </message>
+         </else>
+       </if>
+       <if expr="is_win">
+         <message name="IDS_SXS_SHORTCUT_NAME" desc="Unused in Vanadium builds" translateable="false">
+diff --git a/chrome/android/java/res_vanadium_base/values/channel_constants.xml b/chrome/android/java/res_vanadium_base/values/channel_constants.xml
+index 1a502c787b541..0651d0b7c8e03 100644
+--- a/chrome/android/java/res_vanadium_base/values/channel_constants.xml
++++ b/chrome/android/java/res_vanadium_base/values/channel_constants.xml
+@@ -5,10 +5,10 @@ Use of this source code is governed by a BSD-style license that can be
+ found in the LICENSE file.
+ -->
+ 
+ <resources xmlns:android="http://schemas.android.com/apk/res/android">
+     <!-- The application name displayed to the user. -->
+-    <string name="app_name" translatable="false">Vanadium</string>
+-    <string name="bookmark_widget_title" translatable="false">Vanadium bookmarks</string>
+-    <string name="search_widget_title" translatable="false">Vanadium search</string>
+-    <string name="quick_action_search_widget_title" translatable="false">Vanadium quick action search</string>
++    <string name="app_name" translatable="false">Palladium</string>
++    <string name="bookmark_widget_title" translatable="false">Palladium bookmarks</string>
++    <string name="search_widget_title" translatable="false">Palladium search</string>
++    <string name="quick_action_search_widget_title" translatable="false">Palladium quick action search</string>
+ </resources>
+--
+2.43.0
