@@ -1,0 +1,52 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Amaan Qureshi <git@amaanq.com>
+Date: Sun, 11 Jan 2026 00:00:00 +0000
+Subject: [PATCH] enable Chrome Web Store extension installation
+
+This commit spoofs the desktop User-Agent and Client Hints for Chrome
+Web Store domains to enable the "Add to Chrome" button on Android.
+---
+ net/url_request/url_request_http_job.cc | 23 +++++++++++++++++++++++
+ 1 file changed, 23 insertions(+)
+
+diff --git a/net/url_request/url_request_http_job.cc b/net/url_request/url_request_http_job.cc
+index 2d627cd75e4fb..f7782feb57a8b 100644
+--- a/net/url_request/url_request_http_job.cc
++++ b/net/url_request/url_request_http_job.cc
+@@ -526,10 +526,33 @@ void URLRequestHttpJob::Start() {
+   request_info_.extra_headers.SetHeaderIfMissing(
+       HttpRequestHeaders::kUserAgent,
+       http_user_agent_settings_ ? http_user_agent_settings_->GetUserAgent()
+                                 : std::string());
+ 
++  // Spoof desktop User-Agent and Client Hints for Chrome Web Store to enable extension installation
++  if (request_info_.url.DomainIs("chrome.google.com") ||
++      request_info_.url.DomainIs("chromewebstore.google.com")) {
++    std::string ua = http_user_agent_settings_
++                         ? http_user_agent_settings_->GetUserAgent()
++                         : std::string();
++    size_t open = ua.find('(');
++    size_t close = open == std::string::npos ? open : ua.find(')', open);
++    if (close != std::string::npos) {
++      ua.replace(open + 1, close - open - 1, "X11; Linux x86_64");
++      size_t mobile = ua.find(" Mobile");
++      if (mobile != std::string::npos) {
++        ua.erase(mobile, 7);
++      }
++      request_info_.extra_headers.SetHeader(HttpRequestHeaders::kUserAgent, ua);
++      // Override Client Hints to appear as desktop
++      request_info_.extra_headers.SetHeader("Sec-CH-UA-Mobile", "?0");
++      request_info_.extra_headers.SetHeader("Sec-CH-UA-Platform", "\"Linux\"");
++      request_info_.extra_headers.SetHeader("Sec-CH-UA-Form-Factors",
++                                            "\"Desktop\"");
++    }
++  }
++
+   AddExtraHeaders();
+ 
+   if (ShouldAddCookieHeader()) {
+     AddCookieHeaderAndStart();
+   } else {
+-- 
+2.54.0
+

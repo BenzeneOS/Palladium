@@ -1,0 +1,61 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Amaan Qureshi <git@amaanq.com>
+Date: Mon, 25 May 2026 00:00:00 +0000
+Subject: [PATCH] enable the extensions (puzzle) menu on phone
+
+The app-menu "Open extensions menu" silently fell back to
+chrome://extensions on phones because getExtensionsToolbarCoordinator() was
+null. Two reasons, no new code: the creation block is gated on the
+extensions_toolbar_container_stub ViewStub that only existed in
+toolbar_tablet.xml (add it to toolbar_phone.xml), and the maybeCreate() call
+gratuitously cast mToolbarLayout to ToolbarTablet when the parameter is a
+plain ViewGroup (drop it). ChromeAndroidTask is already available on phone
+via kBrowserWindowInterfaceMobile, so the coordinator then builds and 0273's
+showExtensionsMenu() opens the real popup.
+---
+ .../chromium/chrome/browser/toolbar/ToolbarManager.java    | 2 +-
+ .../ui/android/toolbar/java/res/layout/toolbar_phone.xml   | 7 +++++++
+ 2 files changed, 8 insertions(+), 1 deletion(-)
+
+diff --git a/chrome/android/java/src/org/chromium/chrome/browser/toolbar/ToolbarManager.java b/chrome/android/java/src/org/chromium/chrome/browser/toolbar/ToolbarManager.java
+index 1bd5c5cbfa5d5..848714edf045e 100644
+--- a/chrome/android/java/src/org/chromium/chrome/browser/toolbar/ToolbarManager.java
++++ b/chrome/android/java/src/org/chromium/chrome/browser/toolbar/ToolbarManager.java
+@@ -2666,11 +2666,11 @@ public class ToolbarManager
+                                                         task,
+                                                         tabModelProfile,
+                                                         mActivityTabProvider.asObservable(),
+                                                         mTabCreatorManager.getTabCreator(false),
+                                                         getBrowsingModeThemeColorProvider(),
+-                                                        (ToolbarTablet) mToolbarLayout,
++                                                        mToolbarLayout,
+                                                         contextMenuPopulatorFactory,
+                                                         selectionDropdownMenuDelegate,
+                                                         mTabModelSelector,
+                                                         mModalDialogManagerSupplier.get(),
+                                                         cleanup));
+diff --git a/chrome/browser/ui/android/toolbar/java/res/layout/toolbar_phone.xml b/chrome/browser/ui/android/toolbar/java/res/layout/toolbar_phone.xml
+index 9e1f21d5a0c8e..85404b6c78bfb 100644
+--- a/chrome/browser/ui/android/toolbar/java/res/layout/toolbar_phone.xml
++++ b/chrome/browser/ui/android/toolbar/java/res/layout/toolbar_phone.xml
+@@ -72,10 +72,17 @@ found in the LICENSE file.
+             android:layout="@layout/signin_button_view"
+             android:layout_width="wrap_content"
+             android:layout_height="match_parent"
+             android:visibility="gone"/>
+ 
++        <ViewStub
++            android:id="@+id/extensions_toolbar_container_stub"
++            android:inflatedId="@+id/extensions_toolbar_container"
++            android:layout_width="wrap_content"
++            android:layout_height="?attr/toolbarButtonHeight"
++            android:layout_marginVertical="?attr/toolbarButtonMarginVertical"/>
++
+         <org.chromium.chrome.browser.toolbar.top.ToggleTabStackButton
+             android:id="@+id/tab_switcher_button"
+             style="@style/ToolbarHoverableButton"
+             android:layout_gravity="top"
+             android:clickable="false"
+-- 
+2.54.0
+

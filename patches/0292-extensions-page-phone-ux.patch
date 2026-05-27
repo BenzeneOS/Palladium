@@ -1,0 +1,124 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Amaan Qureshi <git@amaanq.com>
+Date: Sun, 24 May 2026 00:00:00 +0000
+Subject: [PATCH] chrome://extensions: render natively on phones, add Web Store
+ button
+
+Four WebUI tweaks for phone form factors (matching Kiwi): a viewport meta
+in extensions.html (else Blink uses the 980px desktop layout and fit-zooms),
+dropping #content-wrapper's 400px min-width so the empty state wraps instead
+of overflowing, flex-wrapping #buttonStrip so the dev-drawer buttons don't
+clip, and a first-class Chrome Web Store button in the drawer.
+---
+ .../browser/resources/extensions/extensions.html   |  1 +
+ chrome/browser/resources/extensions/item_list.css  |  1 -
+ chrome/browser/resources/extensions/toolbar.css    | 14 +++++---------
+ .../browser/resources/extensions/toolbar.html.ts   |  3 +++
+ chrome/browser/resources/extensions/toolbar.ts     |  4 ++++
+ 5 files changed, 13 insertions(+), 10 deletions(-)
+
+diff --git a/chrome/browser/resources/extensions/extensions.html b/chrome/browser/resources/extensions/extensions.html
+index 199f7d07c7b55..da6213a441813 100644
+--- a/chrome/browser/resources/extensions/extensions.html
++++ b/chrome/browser/resources/extensions/extensions.html
+@@ -2,10 +2,11 @@
+ <html dir="$i18n{textdirection}" lang="$i18n{language}"
+     class="loading $i18n{loadTimeClasses}" $i18n{webuiRefresh2026} $i18n{roundedIconsAttribute}>
+ <head>
+   <meta charset="utf8">
+   <meta name="color-scheme" content="light dark">
++  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+   <title>$i18n{title}</title>
+   <base href="chrome://extensions">
+   <link rel="stylesheet" href="chrome://resources/css/md_colors.css">
+   <style>
+     html {
+diff --git a/chrome/browser/resources/extensions/item_list.css b/chrome/browser/resources/extensions/item_list.css
+index 05cc88e7a72b9..579928e208a5b 100644
+--- a/chrome/browser/resources/extensions/item_list.css
++++ b/chrome/browser/resources/extensions/item_list.css
+@@ -17,11 +17,10 @@
+   box-sizing: border-box;
+   height: 100%;
+ }
+ 
+ #content-wrapper {
+-  min-width: var(--extensions-card-width);
+   padding: 24px 60px 64px;
+ }
+ 
+ #content-wrapper:has(extensions-review-panel),
+ #content-wrapper:has(extensions-mv2-deprecation-panel) {
+diff --git a/chrome/browser/resources/extensions/toolbar.css b/chrome/browser/resources/extensions/toolbar.css
+index 881317e1cfe24..e5399f51aafef 100644
+--- a/chrome/browser/resources/extensions/toolbar.css
++++ b/chrome/browser/resources/extensions/toolbar.css
+@@ -41,23 +41,19 @@ cr-tooltip-icon {
+     border-bottom-color: var(--cr-separator-color);
+   }
+ }
+ 
+ #devDrawer[expanded] {
+-  height: calc(var(--button-row-height) + var(--border-bottom-height));
++  height: auto;
+ }
+ 
+ #buttonStrip {
+-  margin-inline-end: auto;
+-  margin-inline-start: 24px;
+-  padding: var(--padding-top-bottom) 0;
+-  position: absolute;
+-  top: calc(var(--button-row-height) * -1);
+-  transition: top var(--drawer-transition);
+-  /* Prevent selection of the blank space between buttons. */
++  display: flex;
++  flex-wrap: wrap;
++  gap: 8px;
++  padding: var(--padding-top-bottom) 24px;
+   user-select: none;
+-  width: 100%;
+ }
+ 
+ #buttonStrip cr-button {
+   margin-inline-end: 16px;
+ }
+diff --git a/chrome/browser/resources/extensions/toolbar.html.ts b/chrome/browser/resources/extensions/toolbar.html.ts
+index f064de9624d6f..32f562d23e1e5 100644
+--- a/chrome/browser/resources/extensions/toolbar.html.ts
++++ b/chrome/browser/resources/extensions/toolbar.html.ts
+@@ -38,10 +38,13 @@ ${this.showPackDialog_ ? html`
+   <extensions-pack-dialog .delegate="${this.delegate as ServiceInterface}"
+       @close="${this.onPackDialogClose_}">
+   </extensions-pack-dialog>` : ''}
+ <div id="devDrawer" ?expanded="${this.expanded_}">
+   <div id="buttonStrip">
++    <cr-button id="webStore" @click="${this.onWebStoreClick_}">
++      Chrome Web Store
++    </cr-button>
+     <cr-button ?hidden="${!this.canLoadUnpacked_()}" id="loadUnpacked"
+         @click="${this.onLoadUnpackedClick_}">
+       $i18n{toolbarLoadUnpacked}
+     </cr-button>
+     <cr-button id="packExtensions" @click="${this.onPackClick_}">
+diff --git a/chrome/browser/resources/extensions/toolbar.ts b/chrome/browser/resources/extensions/toolbar.ts
+index 163d17606312e..e165ce2773a3c 100644
+--- a/chrome/browser/resources/extensions/toolbar.ts
++++ b/chrome/browser/resources/extensions/toolbar.ts
+@@ -177,10 +177,14 @@ export class ExtensionsToolbarElement extends ExtensionsToolbarElementBase {
+       });
+     }
+     this.expanded_ = !this.expanded_;
+   }
+ 
++  protected onWebStoreClick_() {
++    window.open('https://chromewebstore.google.com/category/extensions');
++  }
++
+   protected onLoadUnpackedClick_() {
+     this.delegate.loadUnpacked()
+         .then((success) => {
+           if (success) {
+             const toastManager = getToastManager();
+-- 
+2.54.0
+

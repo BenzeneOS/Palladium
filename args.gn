@@ -24,6 +24,9 @@ dfmify_dev_ui = false
 # https://chromium-review.googlesource.com/c/chromium/src/+/5493819
 use_login_database_as_backend = true
 
+# extensions on Android
+enable_desktop_android_extensions = true
+
 # enable patented codecs
 ffmpeg_branding = "Chrome"
 proprietary_codecs = true

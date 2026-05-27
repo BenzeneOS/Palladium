@@ -1,0 +1,522 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Amaan Qureshi <git@amaanq.com>
+Date: Sun, 11 Jan 2026 00:00:00 +0000
+Subject: [PATCH] enable Vanadium extension code support
+
+Upstream 151 defines ENABLE_DESKTOP_ANDROID_EXTENSIONS for real (args.gn
+turns it on), so this no longer renames that buildflag; those sites stay
+upstream. IS_DESKTOP_ANDROID_VANADIUM switches only the C++ sites the
+extension platform needs on a phone build. Keeps the genuine fixes:
+component-extension webstore icon IDRs don't exist with phone resources,
+current_channel_logo tripped CHECK_IS_TEST on non-branded stable, and
+SharedPrefsUtils.REGISTRY registration for debug-assert builds.
+---
+ chrome/browser/chrome_browser_field_trials.cc |  5 +++
+ .../browser/chrome_content_browser_client.cc  |  2 +-
+ ...me_component_extension_resource_manager.cc |  4 +++
+ .../extensions/favicon/favicon_util.cc        | 12 ++++++-
+ .../AllPreferenceKeyRegistries.java           |  4 ++-
+ .../browser/ui/webui/current_channel_logo.cc  |  1 -
+ chrome/browser/ui/webui/favicon_source.cc     |  6 ++++
+ .../browser/android/media_router_android.h    | 22 ++++++-------
+ .../core/browser/policy_pref_mapping_test.cc  |  2 +-
+ .../api/web_request/permission_helper.cc      |  2 +-
+ extensions/browser/extension_util_unittest.cc |  2 +-
+ extensions/common/command.cc                  |  2 +-
+ extensions/common/command_unittest.cc         |  2 +-
+ .../renderer/bindings/api_binding_util.cc     |  2 +-
+ extensions/test/extensions_unittests_main.cc  |  2 +-
+ .../cpp_bundle_generator.py                   |  2 +-
+ .../cpp_bundle_generator_test.py              |  2 +-
+ .../shared_preferences/SharedPrefsUtils.java  | 31 ++++++++++++++-----
+ 18 files changed, 74 insertions(+), 31 deletions(-)
+
+diff --git a/chrome/browser/chrome_browser_field_trials.cc b/chrome/browser/chrome_browser_field_trials.cc
+index edf55b0274167..1946bb638a25b 100644
+--- a/chrome/browser/chrome_browser_field_trials.cc
++++ b/chrome/browser/chrome_browser_field_trials.cc
+@@ -280,10 +280,15 @@ void ChromeBrowserFieldTrials::RegisterFeatureOverrides(
+ 
+   // Suppress fallback to the legacy Android edge glow shade on Desktop Android.
+   feature_overrides.EnableFeature(features::kSuppressOverscrollGlow);
+ 
+ #endif  // BUILDFLAG(IS_DESKTOP_ANDROID)
++#if BUILDFLAG(IS_DESKTOP_ANDROID_VANADIUM)
++  // TabsEventRouter CHECKs a tab's WebContents, which lazily restored tabs do
++  // not have, so extensions require every tab to be loaded at startup.
++  feature_overrides.EnableFeature(chrome::android::kLoadAllTabsAtStartup);
++#endif
+   // Desktop-first features which are past incubation should either end up here,
+   // or to a finch trial that enables it for all form factors.
+ #endif  // BUILDFLAG(IS_ANDROID)
+ }
+ 
+diff --git a/chrome/browser/chrome_content_browser_client.cc b/chrome/browser/chrome_content_browser_client.cc
+index 75ee253b08035..b9ebc270692d5 100644
+--- a/chrome/browser/chrome_content_browser_client.cc
++++ b/chrome/browser/chrome_content_browser_client.cc
+@@ -4332,11 +4332,11 @@ base::OnceClosure ChromeContentBrowserClient::SelectClientCertificate(
+     // proceed without a certificate. This is done as a temporary workaround to
+     // enable testing.
+     // TODO(wenz): This should instead proceed with the selected certificate
+     // when there are matching certificates in the OS.
+ #if BUILDFLAG(ENABLE_EXTENSIONS) && \
+-    !(BUILDFLAG(IS_ANDROID) && !BUILDFLAG(IS_DESKTOP_ANDROID))
++    !(BUILDFLAG(IS_ANDROID) && !BUILDFLAG(IS_DESKTOP_ANDROID_VANADIUM))
+     if (matching_certificates.empty() && nonmatching_certificates.empty()) {
+       extensions::ProcessMap* process_map =
+           extensions::ProcessMap::Get(profile);
+       if (process_map && process_map->Contains(process_id)) {
+         delegate->ContinueWithCertificate(nullptr, nullptr);
+diff --git a/chrome/browser/extensions/chrome_component_extension_resource_manager.cc b/chrome/browser/extensions/chrome_component_extension_resource_manager.cc
+index 0c5cbd36db247..77756df272864 100644
+--- a/chrome/browser/extensions/chrome_component_extension_resource_manager.cc
++++ b/chrome/browser/extensions/chrome_component_extension_resource_manager.cc
+@@ -85,10 +85,11 @@ class ChromeComponentExtensionResourceManager::Data {
+   // A map from an extension ID to its i18n template replacements.
+   TemplateReplacementMap template_replacements_;
+ };
+ 
+ ChromeComponentExtensionResourceManager::Data::Data() {
++#if !BUILDFLAG(IS_ANDROID)
+   static const webui::ResourcePath kExtraComponentExtensionResources[] = {
+ #if BUILDFLAG(IS_CHROMEOS)
+     {"web_store/webstore_icon_128.png", IDR_WEBSTORE_APP_ICON_128},
+     {"web_store/webstore_icon_16.png", IDR_WEBSTORE_APP_ICON_16},
+ #else
+@@ -99,13 +100,16 @@ ChromeComponentExtensionResourceManager::Data::Data() {
+ #if BUILDFLAG(IS_CHROMEOS)
+     {"chrome_app/chrome_app_icon_32.png", IDR_CHROME_APP_ICON_32},
+     {"chrome_app/chrome_app_icon_192.png", IDR_CHROME_APP_ICON_192},
+ #endif  // BUILDFLAG(IS_CHROMEOS)
+   };
++#endif  // !BUILDFLAG(IS_ANDROID)
+ 
+   AddComponentResourceEntries(kComponentExtensionResources);
++#if !BUILDFLAG(IS_ANDROID)
+   AddComponentResourceEntries(kExtraComponentExtensionResources);
++#endif
+   AddComponentResourceEntries(kAimEligibilityExtensionResources);
+ 
+ #if !BUILDFLAG(IS_ANDROID)
+   if (base::FeatureList::IsEnabled(features::kIndigo)) {
+     AddComponentResourceEntries(indigo_extension_utils::GetResources());
+diff --git a/chrome/browser/extensions/favicon/favicon_util.cc b/chrome/browser/extensions/favicon/favicon_util.cc
+index 4c59a428e7d67..31fd710aeaa33 100644
+--- a/chrome/browser/extensions/favicon/favicon_util.cc
++++ b/chrome/browser/extensions/favicon/favicon_util.cc
+@@ -17,12 +17,15 @@
+ #include "extensions/common/extension.h"
+ #include "extensions/common/permissions/permissions_data.h"
+ #include "ui/base/resource/resource_bundle.h"
+ #include "ui/base/resource/resource_scale_factor.h"
+ #include "ui/gfx/favicon_size.h"
++#include "build/build_config.h"
+ #include "ui/native_theme/native_theme.h"
++#if !BUILDFLAG(IS_ANDROID)
+ #include "ui/resources/grit/ui_resources.h"
++#endif
+ #include "url/gurl.h"
+ 
+ static_assert(BUILDFLAG(ENABLE_EXTENSIONS_CORE));
+ 
+ namespace extensions {
+@@ -30,10 +33,11 @@ class Extension;
+ 
+ namespace favicon_util {
+ 
+ namespace {
+ 
++#if !BUILDFLAG(IS_ANDROID)
+ int GetResourceID(int size_in_pixels) {
+   const bool is_dark =
+       ui::NativeTheme::GetInstanceForNativeUi()->preferred_color_scheme() ==
+       ui::NativeTheme::PreferredColorScheme::kDark;
+   if (size_in_pixels >= 64) {
+@@ -42,21 +46,27 @@ int GetResourceID(int size_in_pixels) {
+   if (size_in_pixels >= 32) {
+     return is_dark ? IDR_DEFAULT_FAVICON_DARK_32 : IDR_DEFAULT_FAVICON_32;
+   }
+   return is_dark ? IDR_DEFAULT_FAVICON_DARK : IDR_DEFAULT_FAVICON;
+ }
++#endif  // !BUILDFLAG(IS_ANDROID)
+ 
+ void OnFaviconAvailable(FaviconCallback callback,
+-                        int size_in_pixels,
++                        [[maybe_unused]] int size_in_pixels,
+                         const favicon_base::FaviconRawBitmapResult& result) {
+   if (result.is_valid()) {
+     std::move(callback).Run(result.bitmap_data);
+   } else {
++#if !BUILDFLAG(IS_ANDROID)
+     std::move(callback).Run(
+         ui::ResourceBundle::GetSharedInstance().LoadDataResourceBytesForScale(
+             GetResourceID(size_in_pixels),
+             ui::GetSupportedResourceScaleFactor(1)));
++#else
++    // Default favicon resources not available on Android
++    std::move(callback).Run(nullptr);
++#endif  // !BUILDFLAG(IS_ANDROID)
+   }
+ }
+ 
+ }  // namespace
+ 
+diff --git a/chrome/browser/preferences/android/java/src/org/chromium/chrome/browser/preferences/AllPreferenceKeyRegistries.java b/chrome/browser/preferences/android/java/src/org/chromium/chrome/browser/preferences/AllPreferenceKeyRegistries.java
+index a47e523a4d077..e4a247a07e90c 100644
+--- a/chrome/browser/preferences/android/java/src/org/chromium/chrome/browser/preferences/AllPreferenceKeyRegistries.java
++++ b/chrome/browser/preferences/android/java/src/org/chromium/chrome/browser/preferences/AllPreferenceKeyRegistries.java
+@@ -6,10 +6,11 @@ package org.chromium.chrome.browser.preferences;
+ 
+ import androidx.annotation.VisibleForTesting;
+ 
+ import org.chromium.base.shared_preferences.KnownPreferenceKeyRegistries;
+ import org.chromium.base.shared_preferences.PreferenceKeyRegistry;
++import org.chromium.base.shared_preferences.SharedPrefsUtils;
+ import org.chromium.build.annotations.CheckDiscard;
+ import org.chromium.build.annotations.NullMarked;
+ import org.chromium.components.cached_flags.CachedFlagsSharedPreferences;
+ 
+ import java.util.Set;
+@@ -20,11 +21,12 @@ public class AllPreferenceKeyRegistries {
+     @VisibleForTesting
+     static final Set<PreferenceKeyRegistry> KNOWN_REGISTRIES =
+             Set.of(
+                     ChromeSharedPreferences.REGISTRY,
+                     CachedFlagsSharedPreferences.REGISTRY,
+-                    MultiInstanceSharedPreferences.REGISTRY);
++                    MultiInstanceSharedPreferences.REGISTRY,
++                    SharedPrefsUtils.REGISTRY);
+ 
+     public static void initializeKnownRegistries() {
+         KnownPreferenceKeyRegistries.initializeKnownRegistries(KNOWN_REGISTRIES);
+     }
+ }
+diff --git a/chrome/browser/ui/webui/current_channel_logo.cc b/chrome/browser/ui/webui/current_channel_logo.cc
+index 70f983e5c683e..9033df475b506 100644
+--- a/chrome/browser/ui/webui/current_channel_logo.cc
++++ b/chrome/browser/ui/webui/current_channel_logo.cc
+@@ -27,11 +27,10 @@ int CurrentChannelLogoResourceId() {
+ #else
+     case version_info::Channel::CANARY:
+     case version_info::Channel::DEV:
+     case version_info::Channel::BETA:
+     case version_info::Channel::STABLE:
+-      CHECK_IS_TEST();
+       [[fallthrough]];
+ #endif
+     case version_info::Channel::UNKNOWN:
+       return IDR_PRODUCT_LOGO_32;
+   }
+diff --git a/chrome/browser/ui/webui/favicon_source.cc b/chrome/browser/ui/webui/favicon_source.cc
+index 53ef420dd57a9..443b880c370df 100644
+--- a/chrome/browser/ui/webui/favicon_source.cc
++++ b/chrome/browser/ui/webui/favicon_source.cc
+@@ -29,10 +29,11 @@
+ #include "third_party/skia/include/core/SkBitmap.h"
+ #include "ui/base/resource/resource_bundle.h"
+ #include "ui/base/resource/resource_scale_factor.h"
+ #include "ui/base/webui/web_ui_util.h"
+ #include "ui/gfx/codec/png_codec.h"
++#include "build/build_config.h"
+ #include "ui/native_theme/native_theme.h"
+ #include "ui/resources/grit/ui_resources.h"
+ #include "url/gurl.h"
+ 
+ #if !BUILDFLAG(IS_ANDROID)
+@@ -314,10 +315,14 @@ void FaviconSource::SendDefaultResponse(
+     std::move(callback).Run(nullptr);
+     return;
+   }
+ 
+   int resource_id;
++#if BUILDFLAG(IS_ANDROID)
++  // Only base favicon available on Android (32/64 sizes require is_desktop_android)
++  resource_id = dark_mode ? IDR_DEFAULT_FAVICON_DARK : IDR_DEFAULT_FAVICON;
++#else
+   switch (size_in_dip) {
+ #if !BUILDFLAG(IS_ANDROID) || BUILDFLAG(IS_DESKTOP_ANDROID)
+     case 64:
+       resource_id =
+           dark_mode ? IDR_DEFAULT_FAVICON_DARK_64 : IDR_DEFAULT_FAVICON_64;
+@@ -329,10 +334,11 @@ void FaviconSource::SendDefaultResponse(
+ #endif
+     default:
+       resource_id = dark_mode ? IDR_DEFAULT_FAVICON_DARK : IDR_DEFAULT_FAVICON;
+       break;
+   }
++#endif  // BUILDFLAG(IS_ANDROID)
+   std::move(callback).Run(LoadIconBytes(scale_factor, resource_id));
+ }
+ 
+ base::RefCountedMemory* FaviconSource::LoadIconBytes(float scale_factor,
+                                                      int resource_id) {
+diff --git a/components/media_router/browser/android/media_router_android.h b/components/media_router/browser/android/media_router_android.h
+index b96300d2b0942..657b3fd65e691 100644
+--- a/components/media_router/browser/android/media_router_android.h
++++ b/components/media_router/browser/android/media_router_android.h
+@@ -151,10 +151,21 @@ class MediaRouterAndroid : public MediaRouterBase {
+     // |media_router_android_| owns |this|, so it will outlive |this|.
+     raw_ptr<MediaRouterAndroid> media_router_android_;
+     MediaRoute::Id route_id_;
+   };
+ 
++  struct MediaRouteRequest {
++    MediaRouteRequest(const MediaSource& source,
++                      const std::string& presentation_id,
++                      MediaRouteResponseCallback callback);
++    ~MediaRouteRequest();
++
++    MediaSource media_source;
++    std::string presentation_id;
++    MediaRouteResponseCallback callback;
++  };
++
+   // Removes the route with the given id from |active_routes_| and updates the
+   // registered route observers.
+   void RemoveRoute(const MediaRoute::Id& route_id);
+ 
+   // MediaRouter implementation.
+@@ -188,21 +199,10 @@ class MediaRouterAndroid : public MediaRouterBase {
+                          std::unique_ptr<MediaSinksObserverList>>;
+   MediaSinkObservers sinks_observers_;
+ 
+   base::ObserverList<MediaRoutesObserver> routes_observers_;
+ 
+-  struct MediaRouteRequest {
+-    MediaRouteRequest(const MediaSource& source,
+-                      const std::string& presentation_id,
+-                      MediaRouteResponseCallback callback);
+-    ~MediaRouteRequest();
+-
+-    MediaSource media_source;
+-    std::string presentation_id;
+-    MediaRouteResponseCallback callback;
+-  };
+-
+   using MediaRouteRequests = base::IDMap<std::unique_ptr<MediaRouteRequest>>;
+   MediaRouteRequests route_requests_;
+ 
+   using MediaRoutes = std::vector<MediaRoute>;
+   MediaRoutes active_routes_;
+diff --git a/components/policy/core/browser/policy_pref_mapping_test.cc b/components/policy/core/browser/policy_pref_mapping_test.cc
+index 381e1d4d713dc..6c6e734d1d7aa 100644
+--- a/components/policy/core/browser/policy_pref_mapping_test.cc
++++ b/components/policy/core/browser/policy_pref_mapping_test.cc
+@@ -422,11 +422,11 @@ class PolicyTestCase {
+   bool has_reason_for_missing_test() const {
+     return has_reason_for_missing_test_;
+   }
+ 
+   bool IsOsSupported() const {
+-#if BUILDFLAG(IS_DESKTOP_ANDROID)
++#if BUILDFLAG(IS_DESKTOP_ANDROID_VANADIUM)
+     // For prefs testing desktop Android is considered a separate OS because it
+     // registers some additional prefs (e.g. extensions prefs).
+     const std::string os("desktop_android");
+ #elif BUILDFLAG(IS_ANDROID)
+     const std::string os("android");
+diff --git a/extensions/browser/api/web_request/permission_helper.cc b/extensions/browser/api/web_request/permission_helper.cc
+index 46c329f4a7489..7428b30c6fd51 100644
+--- a/extensions/browser/api/web_request/permission_helper.cc
++++ b/extensions/browser/api/web_request/permission_helper.cc
+@@ -62,11 +62,11 @@ void BrowserContextKeyedAPIFactory<
+   // `ShouldHideBrowserNetworkRequest()` relies on the ExtensionsAPIClient,
+   // which itself uses varioius KeyedServices. Thus, this KeyedService
+   // implicitly depends upon those.
+   ExtensionsAPIClient* extensions_api_client = ExtensionsAPIClient::Get();
+ 
+-#if BUILDFLAG(IS_DESKTOP_ANDROID)
++#if BUILDFLAG(IS_DESKTOP_ANDROID_VANADIUM)
+   // TODO(https://crbug.com/356905053): On Android, the startup and
+   // initialization flow is different.
+   // ExtensionsAPIClient is instantiated as part of the ExtensionsBrowserClient,
+   // which in turn is created as part of BrowserProcessImpl::Init(). On
+   // most desktop platforms, this happens before any profile initialization,
+diff --git a/extensions/browser/extension_util_unittest.cc b/extensions/browser/extension_util_unittest.cc
+index c31bd0e619d6f..57665cf0a2cb4 100644
+--- a/extensions/browser/extension_util_unittest.cc
++++ b/extensions/browser/extension_util_unittest.cc
+@@ -66,11 +66,11 @@ TEST(ExtensionUtilTest, MapUrlToLocalFilePath) {
+   EXPECT_FALSE(does_not_exist_path.empty());
+ }
+ 
+ // TODO(https://crbug.com/356905053):Strict site isolation is not enabled on
+ // Android, so this test is disabled on desktop android.
+-#if BUILDFLAG(IS_DESKTOP_ANDROID)
++#if BUILDFLAG(IS_DESKTOP_ANDROID_VANADIUM)
+ #define MAYBE_ExtensionIdForSiteInstance DISABLED_ExtensionIdForSiteInstance
+ #else
+ #define MAYBE_ExtensionIdForSiteInstance ExtensionIdForSiteInstance
+ #endif
+ TEST(ExtensionUtilTest, MAYBE_ExtensionIdForSiteInstance) {
+diff --git a/extensions/common/command.cc b/extensions/common/command.cc
+index 80bfe1714f0fa..e063fd4b6116e 100644
+--- a/extensions/common/command.cc
++++ b/extensions/common/command.cc
+@@ -117,11 +117,11 @@ std::string Command::CommandPlatform() {
+   return ui::kKeybindingPlatformMac;
+ #elif BUILDFLAG(IS_CHROMEOS)
+   return ui::kKeybindingPlatformChromeOs;
+ #elif BUILDFLAG(IS_LINUX)
+   return ui::kKeybindingPlatformLinux;
+-#elif BUILDFLAG(IS_DESKTOP_ANDROID)
++#elif BUILDFLAG(IS_DESKTOP_ANDROID_VANADIUM)
+   // For now, we use linux keybindings on desktop android.
+   return ui::kKeybindingPlatformLinux;
+ #else
+ #error Unsupported platform
+ #endif
+diff --git a/extensions/common/command_unittest.cc b/extensions/common/command_unittest.cc
+index 60db28f24b46a..f194289b113fc 100644
+--- a/extensions/common/command_unittest.cc
++++ b/extensions/common/command_unittest.cc
+@@ -239,11 +239,11 @@ TEST(CommandTest, ExtensionCommandParsingFallback) {
+ #elif BUILDFLAG(IS_CHROMEOS)
+   ui::Accelerator accelerator(ui::VKEY_C,
+                               ui::EF_SHIFT_DOWN | ui::EF_CONTROL_DOWN);
+   // TODO(https://crbug.com/356905053): Should this be ChromeOS keybindings?
+ 
+-#elif BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_DESKTOP_ANDROID)
++#elif BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_DESKTOP_ANDROID_VANADIUM)
+   ui::Accelerator accelerator(ui::VKEY_L,
+                               ui::EF_SHIFT_DOWN | ui::EF_CONTROL_DOWN);
+ #else
+   ui::Accelerator accelerator(ui::VKEY_D,
+                               ui::EF_SHIFT_DOWN | ui::EF_CONTROL_DOWN);
+diff --git a/extensions/renderer/bindings/api_binding_util.cc b/extensions/renderer/bindings/api_binding_util.cc
+index 8ce0b539c861c..fde7867c255f6 100644
+--- a/extensions/renderer/bindings/api_binding_util.cc
++++ b/extensions/renderer/bindings/api_binding_util.cc
+@@ -146,11 +146,11 @@ std::string_view GetPlatformString() {
+   return "linux";
+ #elif BUILDFLAG(IS_MAC)
+   return "mac";
+ #elif BUILDFLAG(IS_WIN)
+   return "win";
+-#elif BUILDFLAG(IS_DESKTOP_ANDROID)
++#elif BUILDFLAG(IS_DESKTOP_ANDROID_VANADIUM)
+   return "desktop_android";
+ #else
+   NOTREACHED();
+ #endif
+ }
+diff --git a/extensions/test/extensions_unittests_main.cc b/extensions/test/extensions_unittests_main.cc
+index 035e403388ab4..e3190f8702499 100644
+--- a/extensions/test/extensions_unittests_main.cc
++++ b/extensions/test/extensions_unittests_main.cc
+@@ -81,11 +81,11 @@ void ExtensionsTestSuite::Initialize() {
+ 
+   extensions::RegisterPathProvider();
+ 
+   base::FilePath extensions_shell_and_test_pak_path;
+   base::PathService::Get(base::DIR_ASSETS, &extensions_shell_and_test_pak_path);
+-#if BUILDFLAG(IS_DESKTOP_ANDROID)
++#if BUILDFLAG(IS_DESKTOP_ANDROID_VANADIUM)
+   // On Android all pak files are inside the paks folder.
+   extensions_shell_and_test_pak_path =
+       extensions_shell_and_test_pak_path.Append(FILE_PATH_LITERAL("paks"));
+ #endif
+   ui::ResourceBundle::InitSharedInstanceWithPakPath(
+diff --git a/tools/json_schema_compiler/cpp_bundle_generator.py b/tools/json_schema_compiler/cpp_bundle_generator.py
+index 51c6a2457384f..ebee099cde328 100644
+--- a/tools/json_schema_compiler/cpp_bundle_generator.py
++++ b/tools/json_schema_compiler/cpp_bundle_generator.py
+@@ -136,11 +136,11 @@ class CppBundleGenerator(object):
+     ifdefs = []
+     for platform in model_object.platforms:
+       if platform == Platforms.CHROMEOS:
+         ifdefs.append('BUILDFLAG(IS_CHROMEOS)')
+       elif platform == Platforms.DESKTOP_ANDROID:
+-        ifdefs.append('BUILDFLAG(IS_DESKTOP_ANDROID)')
++        ifdefs.append('BUILDFLAG(IS_DESKTOP_ANDROID_VANADIUM)')
+       elif platform == Platforms.LINUX:
+         ifdefs.append('BUILDFLAG(IS_LINUX)')
+       elif platform == Platforms.MAC:
+         ifdefs.append('BUILDFLAG(IS_MAC)')
+       elif platform == Platforms.WIN:
+diff --git a/tools/json_schema_compiler/cpp_bundle_generator_test.py b/tools/json_schema_compiler/cpp_bundle_generator_test.py
+index 81ec7f1f53d33..86925e8c7511f 100755
+--- a/tools/json_schema_compiler/cpp_bundle_generator_test.py
++++ b/tools/json_schema_compiler/cpp_bundle_generator_test.py
+@@ -36,11 +36,11 @@ class CppBundleGeneratorTest(unittest.TestCase):
+ 
+   def testIfDefsForAll(self):
+     cpp_bundle_generator, model = _createCppBundleGenerator(
+         'test/function_platform_all.json')
+     self.assertEqual(
+-        'BUILDFLAG(IS_CHROMEOS) || BUILDFLAG(IS_DESKTOP_ANDROID) '
++        'BUILDFLAG(IS_CHROMEOS) || BUILDFLAG(IS_DESKTOP_ANDROID_VANADIUM) '
+         '|| BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_WIN)',
+         _getPlatformIfdefs(cpp_bundle_generator, model))
+ 
+   def testIfDefsForChromeOS(self):
+     cpp_bundle_generator, model = _createCppBundleGenerator(
+diff --git a/vanadium/chromium_src/base/android/java/src/org/chromium/base/shared_preferences/SharedPrefsUtils.java b/vanadium/chromium_src/base/android/java/src/org/chromium/base/shared_preferences/SharedPrefsUtils.java
+index e9f9abe73111d..c31165201589f 100644
+--- a/vanadium/chromium_src/base/android/java/src/org/chromium/base/shared_preferences/SharedPrefsUtils.java
++++ b/vanadium/chromium_src/base/android/java/src/org/chromium/base/shared_preferences/SharedPrefsUtils.java
+@@ -1,17 +1,39 @@
+ package org.chromium.base.shared_preferences;
+ 
++import org.chromium.build.BuildConfig;
+ import org.chromium.build.annotations.CheckDiscard;
++import org.chromium.build.annotations.Nullable;
+ 
+ import java.util.Arrays;
++import java.util.Collections;
++import java.util.List;
+ 
+ /**
+  * Wrapper utility class for both (Base)ChromePreferenceKeys and SharedPreferencesManager,
+  * which also serves as storage of added PreferenceKeys.
+  */
+ public final class SharedPrefsUtils {
+ 
++    // Registry for custom preference keys
++    public static final @Nullable PreferenceKeyRegistry REGISTRY =
++            (BuildConfig.ENABLE_ASSERTS
++                    ? new PreferenceKeyRegistry(
++                            "shared_prefs_utils",
++                            getKeysInUseList(),
++                            Collections.emptyList(),
++                            Collections.emptyList())
++                    : null);
++
++    @CheckDiscard("Validation is performed in tests and in debug builds.")
++    private static List<String> getKeysInUseList() {
++        return Arrays.asList(
++            SharedPrefsExt.CLOSE_TABS_ON_EXIT.getKey(),
++            SharedPrefsExt.OPEN_LINKS_IN_INCOGNITO.getKey()
++        );
++    }
++
+     public static class BoolSharedPref {
+         private final String key;
+         private final boolean defValue;
+ 
+         BoolSharedPref(String key, boolean defValue) {
+@@ -124,18 +146,13 @@ public final class SharedPrefsUtils {
+         public static final BoolSharedPref OPEN_LINKS_IN_INCOGNITO =
+                 new BoolSharedPref("open_links_in_incognito", false);
+     }
+ 
+     static SharedPreferencesManager getSharedPrefManager() {
+-        return SharedPreferencesManager.getInstanceForRegistry(null);
++        return SharedPreferencesManager.getInstanceForRegistry(REGISTRY);
+     }
+ 
+     @CheckDiscard("Validation is performed in tests and in debug builds.")
+     static boolean isKeyInUse(String key) {
+-        // clang-format off
+-        return Arrays.asList(
+-            SharedPrefsExt.CLOSE_TABS_ON_EXIT.getKey(),
+-            SharedPrefsExt.OPEN_LINKS_IN_INCOGNITO.getKey()
+-        ).contains(key);
+-        // clang-format on
++        return getKeysInUseList().contains(key);
+     }
+ }
+-- 
+2.54.0
+

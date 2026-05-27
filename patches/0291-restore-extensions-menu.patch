@@ -1,0 +1,143 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Amaan Qureshi <git@amaanq.com>
+Date: Sun, 24 May 2026 00:00:00 +0000
+Subject: [PATCH] restore extensions menu on v149
+
+R8 doesn't rewrite ServiceLoaderUtil.maybeCreate(X.class) here and
+-assumenosideeffects elides the load, so every @ServiceImpl in the
+extension subsystem resolves to null and the menu item disappears. Keep
+the @ServiceImpl + interface names so a Class.forName("<Interface>Impl")
+fallback in ServiceLoaderUtil resolves them post-minification, and
+null-check getExtensionsToolbarCoordinator() so the menu item falls back
+to chrome://extensions when toolbar injection didn't run. Also adds the
+vanadium/android_config/proguard.flags that 0271 references but never created.
+---
+ .../org/chromium/base/ServiceLoaderUtil.java  | 10 ++++++++
+ base/android/proguard/chromium_apk.flags      |  8 ++++++-
+ .../chrome/browser/ChromeTabbedActivity.java  | 23 +++++++++++++++++--
+ chrome/android/proguard/main.flags            |  5 +++-
+ vanadium/android_config/proguard.flags        |  4 ++++
+ 5 files changed, 46 insertions(+), 4 deletions(-)
+ create mode 100644 vanadium/android_config/proguard.flags
+
+diff --git a/base/android/java/src/org/chromium/base/ServiceLoaderUtil.java b/base/android/java/src/org/chromium/base/ServiceLoaderUtil.java
+index 3f70271bdb312..0d741c0cf1253 100644
+--- a/base/android/java/src/org/chromium/base/ServiceLoaderUtil.java
++++ b/base/android/java/src/org/chromium/base/ServiceLoaderUtil.java
+@@ -79,10 +79,20 @@ public final class ServiceLoaderUtil {
+                     : String.format(
+                             "Multiple implementations found for %s: %s and %s",
+                             clazz, ret.getClass(), it.next().getClass());
+             return ret;
+         }
++        // Fallback for when R8's ServiceLoader rewriter doesn't fire: resolve
++        // by Chromium's "<Interface>Impl" naming convention.
++        try {
++            Class<?> impl =
++                    Class.forName(clazz.getName() + "Impl", true, clazz.getClassLoader());
++            if (clazz.isAssignableFrom(impl)) {
++                return clazz.cast(impl.getDeclaredConstructor().newInstance());
++            }
++        } catch (Throwable ignored) {
++        }
+         return null;
+     }
+ 
+     @SuppressWarnings("NoSynchronizedMethodCheck")
+     public static synchronized <T> void setInstanceForTesting(Class<T> clazz, T instance) {
+diff --git a/base/android/proguard/chromium_apk.flags b/base/android/proguard/chromium_apk.flags
+index ffdd8e0d052d5..9a11a4c59fbb0 100644
+--- a/base/android/proguard/chromium_apk.flags
++++ b/base/android/proguard/chromium_apk.flags
+@@ -61,15 +61,21 @@
+ # assuming no exceptions will be thrown.
+ -assumenosideeffects class java.util.ServiceLoader {
+   static *** load(...);
+ }
+ 
++# Keep names so ServiceLoaderUtil's Class.forName("<Interface>Impl") fallback resolves.
++-keepnames @org.chromium.build.annotations.ServiceImpl class * {
++  public <init>();
++}
++-dontwarn org.chromium.chrome.browser.ui.extensions.ExtensionKeybindingRegistry
++
+ # Keep the names of exception types, to make it easier to understand stack
+ # traces in contexts where it's not trivial to deobfuscate them - for example
+ # when reported to app developers who are using WebView.
+ -keepnames,allowaccessmodification class ** extends java.lang.Throwable {}
+ 
+ # Allow R8 to optimize away proto lite functionality that is not used.
+ -assumenosideeffects class com.google.protobuf.SchemaUtil {
+     java.lang.Class getGeneratedMessageClass();
+     java.lang.Class getUnknownFieldSetSchemaClass();
+-}
++}
+\ No newline at end of file
+diff --git a/chrome/android/java/src/org/chromium/chrome/browser/ChromeTabbedActivity.java b/chrome/android/java/src/org/chromium/chrome/browser/ChromeTabbedActivity.java
+index 24c7f5942c29c..c94d9f6689070 100644
+--- a/chrome/android/java/src/org/chromium/chrome/browser/ChromeTabbedActivity.java
++++ b/chrome/android/java/src/org/chromium/chrome/browser/ChromeTabbedActivity.java
+@@ -4498,12 +4498,31 @@ public class ChromeTabbedActivity extends ChromeActivity implements PreAttachInt
+                 RecordUserAction.record("MobileMenuRecentEntry");
+             }
+         } else if (id == R.id.extensions_menu_menu_id) {
+             ExtensionsToolbarCoordinator coordinator =
+                     getToolbarManager().getExtensionsToolbarCoordinator();
+-            coordinator.showExtensionsMenu();
+-            RecordUserAction.record("MobileMenuExtensionsMenu");
++            if (coordinator != null) {
++                coordinator.showExtensionsMenu();
++                RecordUserAction.record("MobileMenuExtensionsMenu");
++            } else {
++                // Fall back to chrome://extensions when the toolbar coordinator
++                // isn't injected, so the menu item stays functional.
++                LoadUrlParams params =
++                        new LoadUrlParams(
++                                UrlConstants.CHROME_EXTENSIONS_URL,
++                                PageTransition.AUTO_TOPLEVEL);
++                if (currentTab == null) {
++                    getTabCreator(getCurrentTabModel().isIncognito())
++                            .createNewTab(
++                                    params,
++                                    TabLaunchType.FROM_CHROME_UI,
++                                    /* parent= */ null);
++                } else {
++                    currentTab.loadUrl(params);
++                }
++                RecordUserAction.record("MobileMenuManageExtensions");
++            }
+         } else if (id == R.id.manage_extensions_menu_id) {
+             LoadUrlParams params =
+                     new LoadUrlParams(
+                             UrlConstants.CHROME_EXTENSIONS_URL, PageTransition.AUTO_TOPLEVEL);
+             getTabCreator(/* incognito= */ false)
+diff --git a/chrome/android/proguard/main.flags b/chrome/android/proguard/main.flags
+index 3b26152adbc6c..15d4aecd93a27 100644
+--- a/chrome/android/proguard/main.flags
++++ b/chrome/android/proguard/main.flags
+@@ -37,6 +37,9 @@
+ # removed due to being unused.
+ -dontwarn org.chromium.chrome.modules.on_demand.OnDemandModuleEntryPointsImpl
+ 
+ # Test APK targets do not include the XR bundle code, but do include XrModule.java,
+ # which references XrModuleProvider via an @IdentifierNameString.
+--dontwarn org.chromium.chrome.browser.xr.scenecore.XrModuleProviderImpl
+\ No newline at end of file
++-dontwarn org.chromium.chrome.browser.xr.scenecore.XrModuleProviderImpl
++# Keep extension interface names so ServiceLoaderUtil's Class.forName("<Interface>Impl") fallback resolves (Chrome-only; scoped here so the WebView APK doesn't see no-match rules).
++-keepnames class org.chromium.chrome.browser.ui.extensions.ExtensionUiBackend
++-keepnames class org.chromium.chrome.browser.toolbar.extensions.ExtensionsToolbarCoordinator
+\ No newline at end of file
+diff --git a/vanadium/android_config/proguard.flags b/vanadium/android_config/proguard.flags
+new file mode 100644
+index 0000000000000..29138b87da145
+--- /dev/null
++++ b/vanadium/android_config/proguard.flags
+@@ -0,0 +1,4 @@
++# Keep the Vanadium browser-config classes. ConfigInfo is generated at APK
++# creation time (not build time) and the proto config is parsed via
++# protobuf-lite reflection, so r8 must not strip or obfuscate these.
++-keep class app.vanadium.config.** { *; }
+-- 
+2.54.0
+
