@@ -1,0 +1,567 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Amaan Qureshi <git@amaanq.com>
+Date: Mon, 27 Jul 2026 22:48:04 +0000
+Subject: [PATCH] toolbar: keep omnibox surfaces at the bottom
+
+Bottom placement should persist while editing and on the NTP. The NTP
+should mirror its content and controls around the field.
+---
+ .../chrome/browser/ntp/NewTabPage.java        | 25 ++++++++++++-
+ .../chrome/browser/ntp/NewTabPageLayout.java  | 16 ++++++++-
+ .../DropdownItemViewInfoListBuilder.java      | 12 +++++--
+ .../OmniboxSuggestionsDropdown.java           | 29 +++++++++++++--
+ .../suggestions/SuggestionListViewBinder.java |  2 ++
+ .../toolbar/ToolbarPositionController.java    | 15 ++++----
+ .../browser/toolbar/top/ToolbarPhone.java     | 35 ++++++++++++++-----
+ 7 files changed, 113 insertions(+), 21 deletions(-)
+
+diff --git a/chrome/android/java/src/org/chromium/chrome/browser/ntp/NewTabPage.java b/chrome/android/java/src/org/chromium/chrome/browser/ntp/NewTabPage.java
+index 7e6e402106744..dc2e18ca5cbfc 100644
+--- a/chrome/android/java/src/org/chromium/chrome/browser/ntp/NewTabPage.java
++++ b/chrome/android/java/src/org/chromium/chrome/browser/ntp/NewTabPage.java
+@@ -6,10 +6,11 @@ package org.chromium.chrome.browser.ntp;
+ 
+ import static org.chromium.build.NullUtil.assumeNonNull;
+ 
+ import android.app.Activity;
+ import android.content.Context;
++import android.content.SharedPreferences;
+ import android.graphics.Bitmap;
+ import android.graphics.Canvas;
+ import android.graphics.Point;
+ import android.graphics.Rect;
+ import android.os.SystemClock;
+@@ -23,10 +24,11 @@ import androidx.annotation.VisibleForTesting;
+ import androidx.core.view.ViewCompat;
+ import androidx.recyclerview.widget.RecyclerView;
+ 
+ import org.chromium.base.CallbackController;
+ import org.chromium.base.CallbackUtils;
++import org.chromium.base.ContextUtils;
+ import org.chromium.base.DeviceInfo;
+ import org.chromium.base.Log;
+ import org.chromium.base.TimeUtils;
+ import org.chromium.base.TraceEvent;
+ import org.chromium.base.metrics.RecordHistogram;
+@@ -69,10 +71,11 @@ import org.chromium.chrome.browser.ntp_customization.NtpCustomizationUtils.NtpBa
+ import org.chromium.chrome.browser.ntp_customization.theme.chrome_colors.NtpThemeColorInfo;
+ import org.chromium.chrome.browser.ntp_customization.theme.upload_image.BackgroundImageInfo;
+ import org.chromium.chrome.browser.omnibox.OmniboxStub;
+ import org.chromium.chrome.browser.omnibox.voice.VoiceRecognitionHandler;
+ import org.chromium.chrome.browser.omnibox.voice.VoiceRecognitionIntentHandler;
++import org.chromium.chrome.browser.preferences.ChromePreferenceKeys;
+ import org.chromium.chrome.browser.privacy.settings.PrivacyPreferencesManagerImpl;
+ import org.chromium.chrome.browser.profiles.Profile;
+ import org.chromium.chrome.browser.readaloud.ReadAloudController;
+ import org.chromium.chrome.browser.readaloud.ReadAloudController.Entrypoint;
+ import org.chromium.chrome.browser.search_engines.TemplateUrlServiceFactory;
+@@ -90,10 +93,11 @@ import org.chromium.chrome.browser.tab.TabHidingType;
+ import org.chromium.chrome.browser.tab.TabObserver;
+ import org.chromium.chrome.browser.tab.TabSelectionType;
+ import org.chromium.chrome.browser.tab_ui.InvalidationAwareThumbnailProvider;
+ import org.chromium.chrome.browser.tabmodel.TabModelSelector;
+ import org.chromium.chrome.browser.tasks.HomeSurfaceTracker;
++import org.chromium.chrome.browser.toolbar.settings.AddressBarPreference;
+ import org.chromium.chrome.browser.toolbar.top.Toolbar;
+ import org.chromium.chrome.browser.ui.bottombar.BottomBarConfigUtils;
+ import org.chromium.chrome.browser.ui.edge_to_edge.EdgeToEdgeController;
+ import org.chromium.chrome.browser.ui.edge_to_edge.TopInsetProvider;
+ import org.chromium.chrome.browser.ui.messages.snackbar.SnackbarManager;
+@@ -145,10 +149,11 @@ public class NewTabPage
+     // This is to count simultaneous NTP for the "NewTabPage.Count" UMA metric. This is
+     // incremented/decremented on the UI thread.
+     private static int sTotalCount;
+ 
+     protected final Tab mTab;
++    private final SharedPreferences.OnSharedPreferenceChangeListener mToolbarPositionListener;
+     private final long mNavigationStartMs;
+     private boolean mRecordedFcp;
+ 
+     private final Supplier<@Nullable Tab> mActivityTabProvider;
+     private final ActivityLifecycleDispatcher mActivityLifecycleDispatcher;
+@@ -457,10 +462,24 @@ public class NewTabPage
+         mBottomSheetController = bottomSheetController;
+         mIsInNightMode = isInNightMode;
+         mTabStripHeightSupplier = tabStripHeightSupplier;
+         mTopInsetProvider = topInsetProvider;
+ 
++        // Reloading the WebContents rebuilds the NTP for the new toolbar position,
++        // unlike Tab#reload which only refreshes the feed.
++        mToolbarPositionListener =
++                (prefs, key) -> {
++                    if (ChromePreferenceKeys.TOOLBAR_TOP_ANCHORED.equals(key)
++                            && !mIsDestroyed
++                            && !mTab.isDestroyed()
++                            && mTab.getWebContents() != null) {
++                        mTab.getWebContents().getNavigationController().reload(true);
++                    }
++                };
++        ContextUtils.getAppSharedPreferences()
++                .registerOnSharedPreferenceChangeListener(mToolbarPositionListener);
++
+         Profile profile = mTab.getProfile();
+ 
+         SuggestionsNavigationDelegate navigationDelegate =
+                 new SuggestionsNavigationDelegate(
+                         activity, profile, nativePageHost, tabModelSelector, mTab);
+@@ -802,11 +821,13 @@ public class NewTabPage
+      * @param isLff Whether the activity is running in large form factor mode.
+      * @return Whether the NTP is in single url bar mode, i.e. the url bar is shown in-line on the
+      *     NTP.
+      */
+     public static boolean isInSingleUrlBarMode(boolean isLff) {
+-        return !isLff;
++        // A bottom toolbar keeps its own omnibox on the NTP, like the tablet layout does,
++        // so the fakebox must not claim ownership of it.
++        return !isLff && AddressBarPreference.isToolbarConfiguredToShowOnTop();
+     }
+ 
+     /**
+      * Update the margins for the content when browser controls constraints or bottom control height
+      * are changed.
+@@ -1114,10 +1135,12 @@ public class NewTabPage
+             mHomepageStateListener = null;
+         }
+ 
+         updateNtpScrollListener(false);
+ 
++        ContextUtils.getAppSharedPreferences()
++                .unregisterOnSharedPreferenceChangeListener(mToolbarPositionListener);
+         sTotalCount--;
+         mIsDestroyed = true;
+     }
+ 
+     @Override
+diff --git a/chrome/android/java/src/org/chromium/chrome/browser/ntp/NewTabPageLayout.java b/chrome/android/java/src/org/chromium/chrome/browser/ntp/NewTabPageLayout.java
+index c6fca8526d01d..dcc66604db43c 100644
+--- a/chrome/android/java/src/org/chromium/chrome/browser/ntp/NewTabPageLayout.java
++++ b/chrome/android/java/src/org/chromium/chrome/browser/ntp/NewTabPageLayout.java
+@@ -4,19 +4,21 @@
+ 
+ package org.chromium.chrome.browser.ntp;
+ 
+ import android.content.Context;
+ import android.util.AttributeSet;
++import android.view.Gravity;
+ import android.view.View;
+ import android.view.ViewGroup;
+ import android.view.ViewStub;
+ import android.widget.LinearLayout;
+ 
+ import org.chromium.base.Log;
+ import org.chromium.build.annotations.NullMarked;
+ import org.chromium.build.annotations.Nullable;
+ import org.chromium.chrome.R;
++import org.chromium.chrome.browser.toolbar.settings.AddressBarPreference;
+ import org.chromium.chrome.browser.ui.theme.ChromeSemanticColorUtils;
+ 
+ /**
+  * Layout for the new tab page. This positions the page elements in the correct vertical positions.
+  * There are no separate phone and tablet UIs; this layout adapts based on the available space.
+@@ -39,34 +41,44 @@ public class NewTabPageLayout extends LinearLayout {
+         void updateActionButtonVisibility();
+     }
+ 
+     private static final String TAG = "NewTabPageLayout";
+ 
++    private final boolean mToolbarAtBottom;
+     private @Nullable Delegate mDelegate;
+     private @Nullable View mSearchBoxView;
+ 
+     /** Constructor for inflating from XML. */
+     public NewTabPageLayout(Context context, AttributeSet attrs) {
+         super(context, attrs);
++        mToolbarAtBottom = !AddressBarPreference.isToolbarConfiguredToShowOnTop();
+     }
+ 
+     @Override
+     protected void onFinishInflate() {
+         super.onFinishInflate();
+ 
+         setBackgroundColor(ChromeSemanticColorUtils.getHomeSurfaceBackgroundColor(getContext()));
+ 
++        if (mToolbarAtBottom) setGravity(Gravity.BOTTOM | Gravity.CENTER_HORIZONTAL);
++
+         // TODO(crbug.com/347509698): Remove the log statements after fixing the bug.
+         Log.i(TAG, "NewTabPageLayout.onFinishInflate before insertSiteSectionView");
+ 
+         initializeSiteSectionView();
+ 
+         Log.i(TAG, "NewTabPageLayout.onFinishInflate after insertSiteSectionView");
+     }
+ 
+     @Override
+     protected void onMeasure(int widthMeasureSpec, int heightMeasureSpec) {
++        // Fill the viewport so bottom gravity lands the content beside the toolbar.
++        if (mToolbarAtBottom) {
++            View viewport = getRootView().findViewById(R.id.feed_stream_recycler_view);
++            if (viewport != null) setMinimumHeight(viewport.getMeasuredHeight());
++        }
++
+         if (mDelegate != null) {
+             int width = MeasureSpec.getSize(widthMeasureSpec);
+             mDelegate.onMeasure(width);
+         }
+ 
+@@ -104,12 +116,14 @@ public class NewTabPageLayout extends LinearLayout {
+     void setDelegate(Delegate delegate) {
+         mDelegate = delegate;
+     }
+ 
+     /** Sets the search box view. */
+-    public void setSearchBoxView(View view) {
++    public void setSearchBoxView(@Nullable View view) {
+         mSearchBoxView = view;
++        // The binder passes null while the NTP is being torn down.
++        if (mToolbarAtBottom && view != null) view.setVisibility(View.GONE);
+     }
+ 
+     /**
+      * Sets the translation_y of the fakebox and all views above it, but not the views below. Used
+      * when the url focus animation is combined with the omnibox suggestions list animation to
+diff --git a/chrome/browser/ui/android/omnibox/java/src/org/chromium/chrome/browser/omnibox/suggestions/DropdownItemViewInfoListBuilder.java b/chrome/browser/ui/android/omnibox/java/src/org/chromium/chrome/browser/omnibox/suggestions/DropdownItemViewInfoListBuilder.java
+index 384c66ec56ba5..85ef5d3d3072b 100644
+--- a/chrome/browser/ui/android/omnibox/java/src/org/chromium/chrome/browser/omnibox/suggestions/DropdownItemViewInfoListBuilder.java
++++ b/chrome/browser/ui/android/omnibox/java/src/org/chromium/chrome/browser/omnibox/suggestions/DropdownItemViewInfoListBuilder.java
+@@ -2,10 +2,12 @@
+ // Use of this source code is governed by a BSD-style license that can be
+ // found in the LICENSE file.
+ 
+ package org.chromium.chrome.browser.omnibox.suggestions;
+ 
++import static org.chromium.build.NullUtil.assumeNonNull;
++
+ import android.content.Context;
+ import android.text.TextUtils;
+ 
+ import androidx.annotation.VisibleForTesting;
+ 
+@@ -213,10 +215,12 @@ class DropdownItemViewInfoListBuilder {
+         assert groupMatches != null;
+ 
+         int numGroupMatches = groupMatches.size();
+         assert numGroupMatches > 0;
+         var result = new ArrayList<DropdownItemViewInfo>(numGroupMatches);
++        boolean toolbarOnBottom =
++                assumeNonNull(mToolbarPositionSupplier.get()) == ControlsPosition.BOTTOM;
+ 
+         // Only set the Header Title when both ID and details are specified.
+         // Note that despite GroupsDetails map not holding <null> values,
+         // a group definition for specific ID may be unavailable, or the group
+         // header text may be empty.
+@@ -238,12 +242,16 @@ class DropdownItemViewInfoListBuilder {
+ 
+             boolean isFirstItem = indexInList == 0;
+             boolean isLastItem = indexInList == numGroupMatches - 1;
+             model.set(
+                     SuggestionCommonProperties.BG_POSITIONAL_MODE,
+-                    getPositionalMode(isFirstItem, isLastItem));
+-            model.set(SuggestionCommonProperties.SHOW_DIVIDER, indexInList < numGroupMatches - 1);
++                    getPositionalMode(
++                            toolbarOnBottom ? isLastItem : isFirstItem,
++                            toolbarOnBottom ? isFirstItem : isLastItem));
++            model.set(
++                    SuggestionCommonProperties.SHOW_DIVIDER,
++                    toolbarOnBottom ? indexInList > 0 : indexInList < numGroupMatches - 1);
+             model.set(
+                     SuggestionCommonProperties.SHOW_GROUP_SEPARATOR,
+                     showGroupSeparatorDecoration && isFirstItem);
+             model.set(SuggestionCommonProperties.HEADER_TITLE, isFirstItem ? headerText : null);
+ 
+diff --git a/chrome/browser/ui/android/omnibox/java/src/org/chromium/chrome/browser/omnibox/suggestions/OmniboxSuggestionsDropdown.java b/chrome/browser/ui/android/omnibox/java/src/org/chromium/chrome/browser/omnibox/suggestions/OmniboxSuggestionsDropdown.java
+index 943786a86904b..e8a345432c0e3 100644
+--- a/chrome/browser/ui/android/omnibox/java/src/org/chromium/chrome/browser/omnibox/suggestions/OmniboxSuggestionsDropdown.java
++++ b/chrome/browser/ui/android/omnibox/java/src/org/chromium/chrome/browser/omnibox/suggestions/OmniboxSuggestionsDropdown.java
+@@ -8,15 +8,17 @@ import static org.chromium.build.NullUtil.assumeNonNull;
+ 
+ import android.content.Context;
+ import android.os.Handler;
+ import android.os.Looper;
+ import android.util.AttributeSet;
++import android.view.Gravity;
+ import android.view.KeyEvent;
+ import android.view.MotionEvent;
+ import android.view.View;
+ import android.view.ViewGroup;
+ import android.view.accessibility.AccessibilityEvent;
++import android.widget.FrameLayout;
+ 
+ import androidx.annotation.StringRes;
+ import androidx.annotation.VisibleForTesting;
+ import androidx.core.view.accessibility.AccessibilityNodeInfoCompat;
+ import androidx.recyclerview.widget.LinearLayoutManager;
+@@ -27,10 +29,11 @@ import org.chromium.base.ThreadUtils;
+ import org.chromium.base.TimeUtils;
+ import org.chromium.base.TraceEvent;
+ import org.chromium.base.metrics.TimingMetric;
+ import org.chromium.build.annotations.NullMarked;
+ import org.chromium.build.annotations.Nullable;
++import org.chromium.chrome.browser.browser_controls.BrowserControlsStateProvider.ControlsPosition;
+ import org.chromium.chrome.browser.omnibox.OmniboxMetrics;
+ import org.chromium.chrome.browser.omnibox.R;
+ import org.chromium.chrome.browser.omnibox.styles.OmniboxResourceProvider;
+ import org.chromium.chrome.browser.ui.theme.BrandedColorScheme;
+ import org.chromium.components.omnibox.OmniboxFeatures;
+@@ -73,10 +76,11 @@ public class OmniboxSuggestionsDropdown extends RecyclerView {
+     private @Nullable OmniboxSuggestionsDropdownAdapter mAdapter;
+     private @Nullable GestureObserver mGestureObserver;
+     private @Nullable NavigationListener mNavigationListener;
+     private float mChildVerticalTranslation;
+     private float mChildAlpha = 1.0f;
++    private boolean mToolbarOnTop = true;
+ 
+     private final int mBaseBottomPadding;
+     private final int mBaseTopPadding;
+     private @SelectionController.Mode int mSelectionMode;
+ 
+@@ -114,16 +118,23 @@ public class OmniboxSuggestionsDropdown extends RecyclerView {
+         private boolean mIsScrolledToTop;
+         private boolean mCurrentGestureAffectedKeyboardState;
+         private @Nullable Runnable mSuggestionDropdownScrollListener;
+         private @Nullable Runnable mSuggestionDropdownOverscrolledToTopListener;
+         private @Nullable Callback<Integer> mScrollOffsetListener;
++        private boolean mToolbarOnTop = true;
+ 
+         public SuggestionLayoutScrollListener(Context context) {
+             super(context);
+             mIsScrolledToTop = true;
+         }
+ 
++        void setToolbarPosition(boolean toolbarOnTop) {
++            mToolbarOnTop = toolbarOnTop;
++            setStackFromEnd(!toolbarOnTop);
++            setReverseLayout(!toolbarOnTop);
++        }
++
+         @Override
+         public void onInitializeAccessibilityNodeInfoForItem(
+                 RecyclerView.Recycler recycler,
+                 RecyclerView.State state,
+                 View host,
+@@ -214,11 +225,14 @@ public class OmniboxSuggestionsDropdown extends RecyclerView {
+             // Note: the condition below evaluates `true` only if the scroll direction is "up",
+             // meaning values are <= 0, meaning all three conditions are true:
+             // - resultingDeltaY <= 0
+             // - requestedDeltaY <= 0
+             // - Math.abs(resultingDeltaY) < Math.abs(requestedDeltaY)
+-            boolean newIsScrolledToTop = resultingDeltaY > requestedDeltaY;
++            boolean newIsScrolledToTop =
++                    mToolbarOnTop
++                            ? resultingDeltaY > requestedDeltaY
++                            : resultingDeltaY < requestedDeltaY;
+ 
+             if (mIsScrolledToTop == newIsScrolledToTop) return resultingDeltaY;
+             mIsScrolledToTop = newIsScrolledToTop;
+             mCurrentGestureAffectedKeyboardState = true;
+ 
+@@ -572,15 +586,15 @@ public class OmniboxSuggestionsDropdown extends RecyclerView {
+         }
+ 
+         boolean isGoDownKey = KeyNavigationUtil.isGoDown(event);
+         boolean isGoUpKey = KeyNavigationUtil.isGoUp(event);
+ 
+-        if (isGoDownKey) {
++        if ((mToolbarOnTop && isGoDownKey) || (!mToolbarOnTop && isGoUpKey)) {
+             mSelectionController.selectNextItem();
+             handleSelectionChange();
+             return true;
+-        } else if (isGoUpKey) {
++        } else if ((mToolbarOnTop && isGoUpKey) || (!mToolbarOnTop && isGoDownKey)) {
+             mSelectionController.selectPreviousItem();
+             handleSelectionChange();
+             return true;
+         } else if (KeyNavigationUtil.isEnter(event)) {
+             if (selectedView != null) {
+@@ -654,10 +668,19 @@ public class OmniboxSuggestionsDropdown extends RecyclerView {
+ 
+     /* package */ void cancelWindowContentChangedAnnouncement() {
+         mHandler.removeCallbacksAndMessages(TOKEN_ACCESSIBILITY_FOCUS);
+     }
+ 
++    void setToolbarPosition(@ControlsPosition int toolbarPosition) {
++        mToolbarOnTop = toolbarPosition != ControlsPosition.BOTTOM;
++        mLayoutScrollListener.setToolbarPosition(mToolbarOnTop);
++
++        var params = (FrameLayout.LayoutParams) getLayoutParams();
++        params.gravity = mToolbarOnTop ? Gravity.TOP : Gravity.BOTTOM;
++        setLayoutParams(params);
++    }
++
+     @VisibleForTesting
+     SuggestionLayoutScrollListener getLayoutScrollListener() {
+         return mLayoutScrollListener;
+     }
+ 
+diff --git a/chrome/browser/ui/android/omnibox/java/src/org/chromium/chrome/browser/omnibox/suggestions/SuggestionListViewBinder.java b/chrome/browser/ui/android/omnibox/java/src/org/chromium/chrome/browser/omnibox/suggestions/SuggestionListViewBinder.java
+index 1c4a01c30bf35..8748c1ded5bbf 100644
+--- a/chrome/browser/ui/android/omnibox/java/src/org/chromium/chrome/browser/omnibox/suggestions/SuggestionListViewBinder.java
++++ b/chrome/browser/ui/android/omnibox/java/src/org/chromium/chrome/browser/omnibox/suggestions/SuggestionListViewBinder.java
+@@ -142,10 +142,12 @@ class SuggestionListViewBinder
+             // elements. Be sure to capture and reflect this fact appropriately.
+             updateContainerVisibility(model, view);
+         } else if (SuggestionListProperties.APPLY_MARGIN_FOR_LEFT_SIDE_BAR.equals(propertyKey)
+                 || SuggestionListProperties.LEFT_SIDE_BAR_MARGIN_PX.equals(propertyKey)) {
+             updateContainerMargin(model, view);
++        } else if (SuggestionListProperties.TOOLBAR_POSITION.equals(propertyKey)) {
++            view.dropdown.setToolbarPosition(model.get(SuggestionListProperties.TOOLBAR_POSITION));
+         }
+     }
+ 
+     private void updateColorScheme(PropertyModel model, SuggestionListViewHolder holder) {
+         @FuseboxLayoutMode int layoutMode = model.get(SuggestionListProperties.FUSEBOX_LAYOUT_MODE);
+diff --git a/chrome/browser/ui/android/toolbar/java/src/org/chromium/chrome/browser/toolbar/ToolbarPositionController.java b/chrome/browser/ui/android/toolbar/java/src/org/chromium/chrome/browser/toolbar/ToolbarPositionController.java
+index 43bebc6326fdf..73f8482d1a56d 100644
+--- a/chrome/browser/ui/android/toolbar/java/src/org/chromium/chrome/browser/toolbar/ToolbarPositionController.java
++++ b/chrome/browser/ui/android/toolbar/java/src/org/chromium/chrome/browser/toolbar/ToolbarPositionController.java
+@@ -476,11 +476,11 @@ public class ToolbarPositionController implements OnSharedPreferenceChangeListen
+         }
+     }
+ 
+     /**
+      * Whether the current position matches the user-configured one, e.g. if the configured position
+-     * is bottom but the omnibox is focused.
++     * is bottom but the NTP is showing.
+      */
+     public boolean doesPrefMismatchPosition() {
+         @ControlsPosition
+         int positionForPref =
+                 isToolbarConfiguredToShowOnTop() ? ControlsPosition.TOP : ControlsPosition.BOTTOM;
+@@ -660,16 +660,19 @@ public class ToolbarPositionController implements OnSharedPreferenceChangeListen
+             boolean isFindInPageShowing,
+             boolean isFormFieldFocusedWithKeyboardVisible,
+             boolean isBrowserControlsHidden,
+             boolean doesUserPreferTopToolbar,
+             @ControlsPosition int currentPosition) {
++        boolean forceBottomForNtpOrFocusedOmnibox =
++                (ntpShowing || isOmniboxFocused) && !doesUserPreferTopToolbar;
+         @ControlsPosition int newControlsPosition;
+-        if (ntpShowing
+-                || tabSwitcherShowing
+-                || isOmniboxFocused
+-                || isFindInPageShowing
+-                || doesUserPreferTopToolbar) {
++        if (!forceBottomForNtpOrFocusedOmnibox
++                && (ntpShowing
++                        || tabSwitcherShowing
++                        || isOmniboxFocused
++                        || isFindInPageShowing
++                        || doesUserPreferTopToolbar)) {
+             newControlsPosition = ControlsPosition.TOP;
+         } else {
+             newControlsPosition = ControlsPosition.BOTTOM;
+         }
+ 
+diff --git a/chrome/browser/ui/android/toolbar/java/src/org/chromium/chrome/browser/toolbar/top/ToolbarPhone.java b/chrome/browser/ui/android/toolbar/java/src/org/chromium/chrome/browser/toolbar/top/ToolbarPhone.java
+index 32041e70256cd..ba3adea529940 100644
+--- a/chrome/browser/ui/android/toolbar/java/src/org/chromium/chrome/browser/toolbar/top/ToolbarPhone.java
++++ b/chrome/browser/ui/android/toolbar/java/src/org/chromium/chrome/browser/toolbar/top/ToolbarPhone.java
+@@ -92,10 +92,11 @@ import org.chromium.chrome.browser.toolbar.home_button.HomeButtonCoordinator;
+ import org.chromium.chrome.browser.toolbar.menu_button.MenuButtonCoordinator;
+ import org.chromium.chrome.browser.toolbar.optional_button.ButtonData;
+ import org.chromium.chrome.browser.toolbar.optional_button.OptionalButtonCoordinator;
+ import org.chromium.chrome.browser.toolbar.optional_button.OptionalButtonCoordinator.TransitionType;
+ import org.chromium.chrome.browser.toolbar.reload_button.ReloadButtonCoordinator;
++import org.chromium.chrome.browser.toolbar.settings.AddressBarPreference;
+ import org.chromium.chrome.browser.toolbar.signin_button.SigninButtonCoordinator;
+ import org.chromium.chrome.browser.toolbar.top.CaptureReadinessResult.TopToolbarBlockCaptureReason;
+ import org.chromium.chrome.browser.toolbar.top.NavigationPopup.HistoryDelegate;
+ import org.chromium.chrome.browser.toolbar.top.TopToolbarCoordinator.ToolbarColorObserver;
+ import org.chromium.chrome.browser.ui.bottombar.BottomBarConfigUtils;
+@@ -1107,10 +1108,16 @@ public class ToolbarPhone extends ToolbarLayout
+         int searchBoxInset = ntpDelegate.getSearchBoxBoundsVerticalInset();
+         if (mTopPaddingForEdgeToEdgeNtp > 0 && searchBoxInset > 0) {
+             translationY -= searchBoxInset;
+         }
+ 
++        if (!AddressBarPreference.isToolbarConfiguredToShowOnTop()
++                && urlHasFocus()
++                && mTopPaddingForEdgeToEdgeNtp > 0) {
++            translationY -= mTopPaddingForEdgeToEdgeNtp;
++        }
++
+         return Math.max(0, translationY);
+     }
+ 
+     private void createAndRunNtpFocusAnimatorRefactored() {
+         // The scroll fraction will have just changed, so update the expansion fraction accordingly.
+@@ -2414,11 +2421,12 @@ public class ToolbarPhone extends ToolbarLayout
+         //   are repositioned accordingly. Currently this would be bookmark bar (AL only) progress
+         //   bar, and hairline.
+         // - investigate what else needs to be done to make the WRAP_CONTENT work well as the
+         //   default / static setting (likely leading to elimination of `toolbar_height_no_shadow`
+         //   dimension).
+-        if (OmniboxFeatures.sMultilineEditField.isEnabled()) {
++        if (OmniboxFeatures.sMultilineEditField.isEnabled()
++                || !AddressBarPreference.isToolbarConfiguredToShowOnTop()) {
+             updateLayoutParamsForMultiline();
+         }
+ 
+         // If the refactored animations are enabled, we want to update the bg only after we've
+         // started the delayed transition in order to grab the correct starting properties.
+@@ -2434,16 +2442,19 @@ public class ToolbarPhone extends ToolbarLayout
+         triggerUrlFocusAnimation(hasFocus);
+     }
+ 
+     private void updateLayoutParamsForMultiline() {
+         var params = getLayoutParams();
++        int effectiveTopPadding = getEffectiveTopPaddingForEdgeToEdge();
+         params.height =
+                 urlHasFocus()
+                         ? LayoutParams.WRAP_CONTENT
+                         : getResources().getDimensionPixelSize(R.dimen.toolbar_height_no_shadow)
+-                                + mTopPaddingForEdgeToEdgeNtp;
++                                + effectiveTopPadding;
+         setLayoutParams(params);
++        setPaddingRelative(
++                getPaddingStart(), effectiveTopPadding, getPaddingEnd(), getPaddingBottom());
+     }
+ 
+     private boolean animatingSuggestionsListOnNtp() {
+         return getToolbarDataProvider().getNewTabPageDelegate().isLocationBarShown();
+     }
+@@ -3141,28 +3152,36 @@ public class ToolbarPhone extends ToolbarLayout
+         // bar height as the top padding to the toolbar. This ensures the toolbar stays in its
+         // original screen position, and the entire top area (status bar and toolbar) is rendered
+         // with the toolbar's color.
+         mTopPaddingForEdgeToEdgeNtp = newTopPadding;
+ 
++        int effectiveTopPadding = getEffectiveTopPaddingForEdgeToEdge();
+         var layoutParams = getLayoutParams();
+ 
+         // During screen rotation, onToEdgeChange() is called and may reset the toolbar height.
+         // When URL has focus, the toolbar should use WRAP_CONTENT to support multiline omnibox,
+         // instead of being reset to a fixed height.
+-        if (urlHasFocus() && OmniboxFeatures.sMultilineEditField.isEnabled()) {
++        if (urlHasFocus()
++                && (OmniboxFeatures.sMultilineEditField.isEnabled()
++                        || !AddressBarPreference.isToolbarConfiguredToShowOnTop())) {
+             layoutParams.height = LayoutParams.WRAP_CONTENT;
+         } else {
+             layoutParams.height =
+                     getResources().getDimensionPixelSize(R.dimen.toolbar_height_no_shadow)
+-                            + mTopPaddingForEdgeToEdgeNtp;
++                            + effectiveTopPadding;
+         }
+         setLayoutParams(layoutParams);
+         setPaddingRelative(
+-                getPaddingStart(),
+-                mTopPaddingForEdgeToEdgeNtp,
+-                getPaddingEnd(),
+-                getPaddingBottom());
++                getPaddingStart(), effectiveTopPadding, getPaddingEnd(), getPaddingBottom());
++    }
++
++    private int getEffectiveTopPaddingForEdgeToEdge() {
++        if (AddressBarPreference.isToolbarConfiguredToShowOnTop()) {
++            return mTopPaddingForEdgeToEdgeNtp;
++        }
++
++        return (urlHasFocus() || !isNtpVisualState(mVisualState)) ? 0 : mTopPaddingForEdgeToEdgeNtp;
+     }
+ 
+     /** Checks if the given visual state represents a New Tab Page. */
+     private static boolean isNtpVisualState(@VisualState int visualState) {
+         return visualState == VisualState.NEW_TAB_NORMAL
+-- 
+2.54.0
+
