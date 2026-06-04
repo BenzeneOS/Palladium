@@ -1,0 +1,35 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Amaan Qureshi <git@amaanq.com>
+Date: Mon, 27 Jul 2026 22:48:04 +0000
+Subject: [PATCH] webview: force sandboxed out-of-process renderers
+ unconditionally
+
+WebViewDelegate.isMultiProcessEnabled() lets a misconfigured platform land
+WebView renderers in the embedder's UID. Does not enable site isolation
+(crbug.com/806404).
+---
+ .../webview/chromium/WebViewChromiumFactoryProvider.java     | 5 ++---
+ 1 file changed, 2 insertions(+), 3 deletions(-)
+
+diff --git a/android_webview/glue/java/src/com/android/webview/chromium/WebViewChromiumFactoryProvider.java b/android_webview/glue/java/src/com/android/webview/chromium/WebViewChromiumFactoryProvider.java
+index 5a259c6b71e8f..3982be8695bd9 100644
+--- a/android_webview/glue/java/src/com/android/webview/chromium/WebViewChromiumFactoryProvider.java
++++ b/android_webview/glue/java/src/com/android/webview/chromium/WebViewChromiumFactoryProvider.java
+@@ -539,13 +539,12 @@ public class WebViewChromiumFactoryProvider implements WebViewFactoryProvider {
+             // since Java switches are incongruent with Native switches.
+             {
+                 CommandLine cl = CommandLine.getInstance();
+ 
+                 mIsMultiProcessEnabled = webViewDelegate.isMultiProcessEnabled();
+-                if (mIsMultiProcessEnabled) {
+-                    cl.appendSwitch(AwSwitches.WEBVIEW_SANDBOXED_RENDERER);
+-                }
++                // Sandbox unconditionally; platform opt-out would share the embedder's UID.
++                cl.appendSwitch(AwSwitches.WEBVIEW_SANDBOXED_RENDERER);
+                 Log.i(
+                         TAG,
+                         "version=%s (%s) minSdkVersion=%s multiprocess=%s packageId=%s splits=%s",
+                         VersionConstants.PRODUCT_VERSION,
+                         BuildConfig.VERSION_CODE,
+-- 
+2.54.0
