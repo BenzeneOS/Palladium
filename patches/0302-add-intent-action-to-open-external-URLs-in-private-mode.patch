@@ -1,0 +1,206 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Amaan Qureshi <git@amaanq.com>
+Date: Mon, 27 Jul 2026 22:48:04 +0000
+Subject: [PATCH] add intent action to open external URLs in private mode
+
+External ACTION_VIEW intents land in a regular tab; IncognitoTabLauncher drops
+the caller URL by design. PrivateUrlLauncher carries the URL through to a
+trusted incognito re-dispatch under the same policy gate, and its component
+state doubles as an incognito availability check that works before native
+loads.
+---
+ chrome/android/java/AndroidManifest.xml       | 14 +++
+ .../init/ProcessInitializationHandler.java    |  2 +
+ .../android/chrome_java_ext_sources.gni       |  1 +
+ .../chrome/browser/TabPreferencesUtils.java   |  2 +-
+ .../browser/incognito/PrivateUrlLauncher.java | 88 +++++++++++++++++++
+ 5 files changed, 106 insertions(+), 1 deletion(-)
+ create mode 100644 vanadium/chromium_src/chrome/android/java/src/org/chromium/chrome/browser/incognito/PrivateUrlLauncher.java
+
+diff --git a/chrome/android/java/AndroidManifest.xml b/chrome/android/java/AndroidManifest.xml
+index 32eef2189c74a..77a54855a5bd8 100644
+--- a/chrome/android/java/AndroidManifest.xml
++++ b/chrome/android/java/AndroidManifest.xml
+@@ -529,10 +529,24 @@ by a child template that "extends" this file.
+                 <action android:name="org.chromium.chrome.browser.incognito.OPEN_PRIVATE_TAB" />
+                 <category android:name="android.intent.category.DEFAULT" />
+             </intent-filter>
+         </activity>
+ 
++        <activity android:name="org.chromium.chrome.browser.incognito.PrivateUrlLauncher"
++            android:theme="@style/Theme.BrowserUI.NoDisplay"
++            android:taskAffinity=""
++            android:enabled="false"
++            android:excludeFromRecents="true"
++            android:exported="true">
++            <intent-filter>
++                <action android:name="org.chromium.chrome.browser.incognito.OPEN_PRIVATE_VIEW" />
++                <category android:name="android.intent.category.DEFAULT" />
++                <data android:scheme="http" />
++                <data android:scheme="https" />
++            </intent-filter>
++        </activity>
++
+         <activity android:name="org.chromium.chrome.browser.AutofillOptionsLauncher"
+             android:theme="@style/Theme.BrowserUI.NoDisplay"
+             android:excludeFromRecents="true"
+             android:exported="true">
+             <intent-filter>
+diff --git a/chrome/android/java/src/org/chromium/chrome/browser/init/ProcessInitializationHandler.java b/chrome/android/java/src/org/chromium/chrome/browser/init/ProcessInitializationHandler.java
+index 6efddf6f939de..b7095b99fb94f 100644
+--- a/chrome/android/java/src/org/chromium/chrome/browser/init/ProcessInitializationHandler.java
++++ b/chrome/android/java/src/org/chromium/chrome/browser/init/ProcessInitializationHandler.java
+@@ -69,10 +69,11 @@ import org.chromium.chrome.browser.firstrun.TosDialogBehaviorSharedPrefInvalidat
+ import org.chromium.chrome.browser.flags.ChromeFeatureList;
+ import org.chromium.chrome.browser.glic.GlicEnabling;
+ import org.chromium.chrome.browser.history.HistoryDeletionBridge;
+ import org.chromium.chrome.browser.homepage.HomepageManager;
+ import org.chromium.chrome.browser.incognito.IncognitoTabLauncher;
++import org.chromium.chrome.browser.incognito.PrivateUrlLauncher;
+ import org.chromium.chrome.browser.language.GlobalAppLocaleController;
+ import org.chromium.chrome.browser.locale.LocaleManager;
+ import org.chromium.chrome.browser.media.MediaCaptureNotificationServiceImpl;
+ import org.chromium.chrome.browser.media.MediaViewerUtils;
+ import org.chromium.chrome.browser.metrics.LaunchMetrics;
+@@ -743,10 +744,11 @@ public class ProcessInitializationHandler {
+     protected void addPerProfileStartupDeferredTasks(Profile profile, List<Runnable> tasks) {
+         // TODO(crbug.com/40254448): Determine how IncognitoTabLauncher should support multiple
+         // concurrent profiles. Currently, the enabled state will change based on the Profile
+         // initialization order.
+         tasks.add(() -> IncognitoTabLauncher.updateComponentEnabledState(profile));
++        tasks.add(() -> PrivateUrlLauncher.updateComponentEnabledState(profile));
+ 
+         // Initialize the SigninChecker.
+         tasks.add(() -> SigninCheckerProvider.get(profile));
+ 
+         // Initialize the OtherDevicesShortcutController.
+diff --git a/vanadium/chromium_src/chrome/android/chrome_java_ext_sources.gni b/vanadium/chromium_src/chrome/android/chrome_java_ext_sources.gni
+index 62b91c8e5cfda..89e30d7d96a33 100644
+--- a/vanadium/chromium_src/chrome/android/chrome_java_ext_sources.gni
++++ b/vanadium/chromium_src/chrome/android/chrome_java_ext_sources.gni
+@@ -4,10 +4,11 @@
+ 
+ # Three lines of code for minimizing conflicts in rebasing changes
+ # Three lines of code for minimizing conflicts in rebasing changes
+ # Three lines of code for minimizing conflicts in rebasing changes
+ chrome_java_ext_full_path_sources = [
++  "//vanadium/chromium_src/chrome/android/java/src/org/chromium/chrome/browser/incognito/PrivateUrlLauncher.java",
+ ]
+ # Three lines of code for minimizing conflicts in rebasing changes
+ # Three lines of code for minimizing conflicts in rebasing changes
+ # Three lines of code for minimizing conflicts in rebasing changes
+ chrome_java_ext_rel_path_sources = [
+diff --git a/vanadium/chromium_src/chrome/android/java/src/org/chromium/chrome/browser/TabPreferencesUtils.java b/vanadium/chromium_src/chrome/android/java/src/org/chromium/chrome/browser/TabPreferencesUtils.java
+index 0f41a75a1b062..3ea128a929e3a 100644
+--- a/vanadium/chromium_src/chrome/android/java/src/org/chromium/chrome/browser/TabPreferencesUtils.java
++++ b/vanadium/chromium_src/chrome/android/java/src/org/chromium/chrome/browser/TabPreferencesUtils.java
+@@ -27,11 +27,11 @@ public final class TabPreferencesUtils {
+ 
+     public static boolean shouldOpenLinksInIncognito() {
+         return SharedPrefsExt.OPEN_LINKS_IN_INCOGNITO.get();
+     }
+ 
+-    static Intent createIncognitoIntent(Context context, Intent intent) {
++    public static Intent createIncognitoIntent(Context context, Intent intent) {
+         Intent newIntent = new Intent();
+         newIntent.setAction(intent.getAction());
+         newIntent.setData(intent.getData());
+         newIntent.putExtras(intent);
+         newIntent.setClass(context, ChromeLauncherActivity.class);
+diff --git a/vanadium/chromium_src/chrome/android/java/src/org/chromium/chrome/browser/incognito/PrivateUrlLauncher.java b/vanadium/chromium_src/chrome/android/java/src/org/chromium/chrome/browser/incognito/PrivateUrlLauncher.java
+new file mode 100644
+index 0000000000000..aad737039cc98
+--- /dev/null
++++ b/vanadium/chromium_src/chrome/android/java/src/org/chromium/chrome/browser/incognito/PrivateUrlLauncher.java
+@@ -0,0 +1,88 @@
++// Copyright 2026 The Vanadium Authors
++// Use of this source code is governed by a GPLv2.0 only-style license that can be
++// found in the LICENSE file.
++
++package org.chromium.chrome.browser.incognito;
++
++import android.app.Activity;
++import android.content.ComponentName;
++import android.content.Context;
++import android.content.Intent;
++import android.content.pm.PackageManager;
++import android.net.Uri;
++import android.os.Bundle;
++
++import androidx.annotation.VisibleForTesting;
++
++import org.chromium.base.ContextUtils;
++import org.chromium.base.ThreadUtils;
++import org.chromium.base.task.PostTask;
++import org.chromium.base.task.TaskTraits;
++import org.chromium.build.annotations.NullMarked;
++import org.chromium.build.annotations.Nullable;
++import org.chromium.chrome.browser.TabPreferencesUtils;
++import org.chromium.chrome.browser.profiles.Profile;
++
++@NullMarked
++public class PrivateUrlLauncher extends Activity {
++    @VisibleForTesting
++    public static final String ACTION_OPEN_PRIVATE_VIEW =
++            "org.chromium.chrome.browser.incognito.OPEN_PRIVATE_VIEW";
++
++    @Override
++    public void onCreate(@Nullable Bundle savedInstanceState) {
++        super.onCreate(savedInstanceState);
++
++        Uri data = getIntent().getData();
++        if (!isAllowedScheme(data)) {
++            finish();
++            return;
++        }
++
++        Intent sanitized = new Intent(Intent.ACTION_VIEW, data);
++        Intent chromeLauncherIntent = TabPreferencesUtils.createIncognitoIntent(this, sanitized);
++
++        startActivity(chromeLauncherIntent);
++        finish();
++    }
++
++    private static boolean isAllowedScheme(@Nullable Uri uri) {
++        if (uri == null) return false;
++        String scheme = uri.getScheme();
++        return "http".equals(scheme) || "https".equals(scheme);
++    }
++
++    // Mirrors incognito availability pre-native, DEFAULT means init has not run yet.
++    public static boolean isIncognitoLikelyAvailable() {
++        Context context = ContextUtils.getApplicationContext();
++        int state =
++                context.getPackageManager()
++                        .getComponentEnabledSetting(
++                                new ComponentName(context, PrivateUrlLauncher.class));
++        return state == PackageManager.COMPONENT_ENABLED_STATE_ENABLED
++                || state == PackageManager.COMPONENT_ENABLED_STATE_DEFAULT;
++    }
++
++    public static void updateComponentEnabledState(Profile profile) {
++        boolean enable = IncognitoUtils.isIncognitoModeEnabled(profile);
++        PostTask.postTask(TaskTraits.USER_VISIBLE, () -> setComponentEnabled(enable));
++    }
++
++    @VisibleForTesting
++    static void setComponentEnabled(boolean enabled) {
++        ThreadUtils.assertOnBackgroundThread();
++        Context context = ContextUtils.getApplicationContext();
++        PackageManager packageManager = context.getPackageManager();
++        ComponentName componentName = new ComponentName(context, PrivateUrlLauncher.class);
++
++        int newState =
++                enabled
++                        ? PackageManager.COMPONENT_ENABLED_STATE_ENABLED
++                        : PackageManager.COMPONENT_ENABLED_STATE_DISABLED;
++        int flags = PackageManager.DONT_KILL_APP;
++
++        if (packageManager.getComponentEnabledSetting(componentName) != newState) {
++            packageManager.setComponentEnabledSetting(componentName, newState, flags);
++        }
++    }
++}
+-- 
+2.54.0
+
