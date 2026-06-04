@@ -1,0 +1,83 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Amaan Qureshi <git@amaanq.com>
+Date: Mon, 27 Jul 2026 22:48:04 +0000
+Subject: [PATCH] incognito: open external web URLs in private via the trusted
+ path
+
+A 3rd-party EXTRA_OPEN_NEW_INCOGNITO_TAB request was dropped by
+isAllowedIncognitoIntent and, if forced past it, tripped ChromeTabbedActivity's
+"Only Chrome is allowed to open incognito tabs" assert. Rewrite such web-URL
+VIEW intents through createIncognitoIntent in the launcher hook so they become
+trusted (self app-id + marker) and clear both gates, reusing PrivateUrlLauncher's
+mechanism; sanitized to a URL-only intent so foreign extras never ride along.
+With incognito disabled the extra is stripped instead, so the URL still opens
+in a regular tab rather than being dropped.
+---
+ .../browser/LaunchIntentDispatcherHooks.java  | 25 +++++++++++++++++++
+ 1 file changed, 25 insertions(+)
+
+diff --git a/vanadium/chromium_src/chrome/android/java/src/org/chromium/chrome/browser/LaunchIntentDispatcherHooks.java b/vanadium/chromium_src/chrome/android/java/src/org/chromium/chrome/browser/LaunchIntentDispatcherHooks.java
+index b26dc4d8491b0..206d1aab50471 100644
+--- a/vanadium/chromium_src/chrome/android/java/src/org/chromium/chrome/browser/LaunchIntentDispatcherHooks.java
++++ b/vanadium/chromium_src/chrome/android/java/src/org/chromium/chrome/browser/LaunchIntentDispatcherHooks.java
+@@ -5,13 +5,16 @@
+ package org.chromium.chrome.browser;
+ 
+ import android.app.Activity;
+ import android.content.Context;
+ import android.content.Intent;
++import android.net.Uri;
+ 
+ import org.chromium.base.IntentUtils;
+ import org.chromium.build.annotations.NullMarked;
++import org.chromium.build.annotations.Nullable;
++import org.chromium.chrome.browser.incognito.PrivateUrlLauncher;
+ 
+ @NullMarked
+ public final class LaunchIntentDispatcherHooks {
+ 
+     private static Intent maybeCreateIncognitoTabIntentFor(Context context, Intent intent) {
+@@ -27,18 +30,40 @@ public final class LaunchIntentDispatcherHooks {
+     static Intent maybeModifyActionViewIntents(Activity activity, Intent intent) {
+         if (!Intent.ACTION_VIEW.equals(intent.getAction())) {
+             return intent;
+         }
+ 
++        // A 3rd-party app requesting incognito for a web URL is rewritten into a trusted
++        // incognito intent (self app-id + trusted marker) so it clears the first-party gates;
++        // sanitized to a fresh URL-only intent so foreign extras never reach the trusted path.
++        if (IntentUtils.safeGetBooleanExtra(
++                        intent, IntentHandler.EXTRA_OPEN_NEW_INCOGNITO_TAB, false)
++                && isWebUrl(intent.getData())) {
++            // With incognito unavailable the extra must go, or upstream's
++            // isAllowedIncognitoIntent drops the whole URL.
++            if (!PrivateUrlLauncher.isIncognitoLikelyAvailable()) {
++                intent.removeExtra(IntentHandler.EXTRA_OPEN_NEW_INCOGNITO_TAB);
++                return intent;
++            }
++            Intent sanitized = new Intent(Intent.ACTION_VIEW, intent.getData());
++            return TabPreferencesUtils.createIncognitoIntent(activity, sanitized);
++        }
++
+         Intent newIntent = intent;
+         if (TabPreferencesUtils.shouldOpenLinksInIncognito()) {
+             newIntent = TabPreferencesUtils.createIncognitoIntent(activity, intent);
+         }
+ 
+         return newIntent;
+     }
+ 
++    private static boolean isWebUrl(@Nullable Uri uri) {
++        if (uri == null) return false;
++        String scheme = uri.getScheme();
++        return "https".equals(scheme) || "http".equals(scheme);
++    }
++
+     static Intent maybeModifyCustomTabIntents(Context context, Intent intent) {
+         Intent newIntent = maybeCreateIncognitoTabIntentFor(context, intent);
+ 
+         return newIntent;
+     }
+-- 
+2.54.0
+
