@@ -1,0 +1,384 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Amaan Qureshi <git@amaanq.com>
+Date: Mon, 27 Jul 2026 22:48:04 +0000
+Subject: [PATCH] appmenu: reverse items for the bottom toolbar
+
+Bottom controls need bottom-first actions. Reverse adapter positions without
+mutating the model.
+---
+ .../chrome/browser/ui/appmenu/AppMenu.java    | 47 +++++++++++++++++--
+ .../ui/appmenu/AppMenuHandlerImpl.java        | 40 +++++++++++-----
+ .../ui/modelutil/ModelListAdapter.java        | 10 ++--
+ 3 files changed, 78 insertions(+), 19 deletions(-)
+
+diff --git a/chrome/browser/ui/android/appmenu/internal/java/src/org/chromium/chrome/browser/ui/appmenu/AppMenu.java b/chrome/browser/ui/android/appmenu/internal/java/src/org/chromium/chrome/browser/ui/appmenu/AppMenu.java
+index 04fd644b7e189..10274fef56c3e 100644
+--- a/chrome/browser/ui/android/appmenu/internal/java/src/org/chromium/chrome/browser/ui/appmenu/AppMenu.java
++++ b/chrome/browser/ui/android/appmenu/internal/java/src/org/chromium/chrome/browser/ui/appmenu/AppMenu.java
+@@ -261,10 +261,11 @@ class AppMenu implements OnKeyListener {
+     private @Nullable ListView mListView;
+     private @Nullable ListAdapter mAdapter;
+     private @Nullable View mFooterView;
+     private int mCurrentScreenRotation = -1;
+     private boolean mIsByPermanentButton;
++    private boolean mStackFromBottom;
+     private @Nullable AnimatorSet mMenuItemEnterAnimator;
+     private long mMenuShownTimeMs;
+     private boolean mSelectedItemBeforeDismiss;
+     private InitialSizingHelper mInitialSizingHelper;
+     private @Nullable MenuSpec mMenuSpec;
+@@ -375,15 +376,17 @@ class AppMenu implements OnKeyListener {
+         // Android L.
+         popup.setBackgroundDrawable(new ColorDrawable(Color.TRANSPARENT));
+         // Make sure that the popup window will be closed when touch outside of it.
+         popup.setOutsideTouchable(true);
+ 
++        boolean isAnchoredAtBottom = isFromBottomBar || controlsPosition == ControlsPosition.BOTTOM;
++        mStackFromBottom = controlsPosition == ControlsPosition.BOTTOM;
+         if (!isByPermanentButton) {
+             popup.setAnimationStyle(
+                     isMenuIconAtStart
+                             ? R.style.StartIconMenuAnim
+-                            : (isFromBottomBar || controlsPosition == ControlsPosition.BOTTOM
++                            : (isAnchoredAtBottom
+                                     ? R.style.EndIconMenuAnimBottom
+                                     : R.style.EndIconMenuAnim));
+         }
+ 
+         // Turn off window animations for low end devices.
+@@ -435,10 +438,11 @@ class AppMenu implements OnKeyListener {
+         }
+         padding.top += innerContainer.getPaddingTop();
+         padding.bottom += innerContainer.getPaddingBottom();
+ 
+         mListView = contentView.findViewById(R.id.app_menu_list);
++        mListView.setStackFromBottom(mStackFromBottom);
+         if (mDisableVerticalScrollbar) {
+             // TODO(crbug.com/465107697) Move code to xml file once the feature is launched.
+             // Cleanup AppMenuDelegate too.
+             mListView.setVerticalScrollBarEnabled(false);
+         }
+@@ -496,10 +500,11 @@ class AppMenu implements OnKeyListener {
+         int[] popupPosition =
+                 getPopupPosition(
+                         mTempLocation,
+                         mIsByPermanentButton,
+                         isFromBottomBar,
++                        isAnchoredAtBottom,
+                         mNegativeSoftwareVerticalOffset,
+                         mCurrentScreenRotation,
+                         visibleDisplayFrame,
+                         padding,
+                         anchorView,
+@@ -653,10 +658,40 @@ class AppMenu implements OnKeyListener {
+             View anchorView,
+             int popupWidth,
+             int popupHeight,
+             int viewLayoutDirection,
+             boolean positionBelowAnchor) {
++        return getPopupPosition(
++                tempLocation,
++                isByPermanentButton,
++                isFromBottomBar,
++                isFromBottomBar,
++                negativeSoftwareVerticalOffset,
++                screenRotation,
++                appRect,
++                padding,
++                anchorView,
++                popupWidth,
++                popupHeight,
++                viewLayoutDirection,
++                positionBelowAnchor);
++    }
++
++    static int[] getPopupPosition(
++            int[] tempLocation,
++            boolean isByPermanentButton,
++            boolean isFromBottomBar,
++            boolean isAnchoredAtBottom,
++            int negativeSoftwareVerticalOffset,
++            int screenRotation,
++            Rect appRect,
++            Rect padding,
++            View anchorView,
++            int popupWidth,
++            int popupHeight,
++            int viewLayoutDirection,
++            boolean positionBelowAnchor) {
+         anchorView.getLocationInWindow(tempLocation);
+         int anchorViewX = tempLocation[0];
+         int anchorViewY = tempLocation[1];
+ 
+         int[] offsets = new int[2];
+@@ -701,11 +736,14 @@ class AppMenu implements OnKeyListener {
+             return new int[] {xPos, yPos};
+         } else {
+             if (positionBelowAnchor) {
+                 offsets[1] = anchorView.getHeight() - padding.top;
+             } else {
+-                offsets[1] = -negativeSoftwareVerticalOffset;
++                offsets[1] =
++                        isAnchoredAtBottom
++                                ? -popupHeight + padding.bottom
++                                : -negativeSoftwareVerticalOffset;
+             }
+             if (viewLayoutDirection != View.LAYOUT_DIRECTION_RTL) {
+                 offsets[0] = anchorView.getWidth() - popupWidth;
+             }
+             int xPos = anchorViewX + offsets[0];
+@@ -872,12 +910,13 @@ class AppMenu implements OnKeyListener {
+         // Find the height for each menu item.
+         int itemCount = mAdapter == null ? 0 : mAdapter.getCount();
+         int[] heightList = new int[itemCount];
+         boolean[] canBeLastList = new boolean[itemCount];
+         for (int i = 0; i < itemCount; i++) {
+-            heightList[i] = mInitialSizingHelper.getInitialHeightForView(i);
+-            canBeLastList[i] = mInitialSizingHelper.canBeLastVisibleInitialView(i);
++            int adapterIndex = mStackFromBottom ? itemCount - 1 - i : i;
++            heightList[i] = mInitialSizingHelper.getInitialHeightForView(adapterIndex);
++            canBeLastList[i] = mInitialSizingHelper.canBeLastVisibleInitialView(adapterIndex);
+         }
+ 
+         int menuHeight = calculateHeightForItems(heightList, canBeLastList, availableScreenSpace);
+         menuHeight +=
+                 mMenuSpec.footerHeight
+diff --git a/chrome/browser/ui/android/appmenu/internal/java/src/org/chromium/chrome/browser/ui/appmenu/AppMenuHandlerImpl.java b/chrome/browser/ui/android/appmenu/internal/java/src/org/chromium/chrome/browser/ui/appmenu/AppMenuHandlerImpl.java
+index 9a4340102fdd8..dcf08a256d56c 100644
+--- a/chrome/browser/ui/android/appmenu/internal/java/src/org/chromium/chrome/browser/ui/appmenu/AppMenuHandlerImpl.java
++++ b/chrome/browser/ui/android/appmenu/internal/java/src/org/chromium/chrome/browser/ui/appmenu/AppMenuHandlerImpl.java
+@@ -33,10 +33,11 @@ import org.chromium.base.metrics.RecordUserAction;
+ import org.chromium.build.annotations.MonotonicNonNull;
+ import org.chromium.build.annotations.NullMarked;
+ import org.chromium.build.annotations.Nullable;
+ import org.chromium.build.annotations.RequiresNonNull;
+ import org.chromium.chrome.browser.browser_controls.BrowserControlsStateProvider;
++import org.chromium.chrome.browser.browser_controls.BrowserControlsStateProvider.ControlsPosition;
+ import org.chromium.chrome.browser.lifecycle.ActivityLifecycleDispatcher;
+ import org.chromium.chrome.browser.lifecycle.ConfigurationChangedObserver;
+ import org.chromium.chrome.browser.lifecycle.StartStopWithNativeObserver;
+ import org.chromium.chrome.browser.ui.appmenu.AppMenu.AppMenuPopup;
+ import org.chromium.chrome.browser.ui.appmenu.internal.R;
+@@ -77,12 +78,20 @@ class AppMenuHandlerImpl
+                 FlyoutHandler<AppMenuPopup>,
+                 HierarchicalMenuController.SubmenuObserver {
+ 
+     /** An {@link Adapter} for the list of items in the app menu. */
+     private static final class AppMenuAdapter extends ModelListAdapter {
+-        AppMenuAdapter(ModelList modelList) {
++        private final boolean mReverseItems;
++
++        AppMenuAdapter(ModelList modelList, boolean reverseItems) {
+             super(modelList);
++            mReverseItems = reverseItems;
++        }
++
++        @Override
++        protected int getModelIndex(int position) {
++            return mReverseItems ? getCount() - 1 - position : position;
+         }
+ 
+         @Override
+         public boolean areAllItemsEnabled() {
+             for (int i = 0; i < getCount(); i++) {
+@@ -333,10 +342,12 @@ class AppMenuHandlerImpl
+             return false;
+         }
+ 
+         assert !(isByPermanentButton && startDragging);
+ 
++        @ControlsPosition
++        int controlsPosition = mBrowserControlsStateProvider.getControlsPosition();
+         mModelList = mDelegate.getMenuItems();
+         mModelList.addObserver(mListObserver);
+         ContextThemeWrapper wrapper =
+                 new ContextThemeWrapper(mContext, R.style.AppMenuThemeOverlay);
+ 
+@@ -364,11 +375,12 @@ class AppMenuHandlerImpl
+             mAppMenuDragHelper = new AppMenuDragHelper(mContext, mAppMenu, itemRowHeight);
+         }
+ 
+         setupModelForHighlightAndClick(mModelList, mHighlightMenuId, this);
+ 
+-        AppMenuAdapter adapter = new AppMenuAdapter(mModelList);
++        AppMenuAdapter adapter =
++                new AppMenuAdapter(mModelList, controlsPosition == ControlsPosition.BOTTOM);
+         SparseArray<BiFunction<Context, PropertyModel, Integer>> customSizingProviders =
+                 new SparseArray<>();
+         registerViewBinders(adapter, customSizingProviders, mDelegate.shouldShowIconBeforeItem());
+ 
+         AppMenu.InitialSizingHelper initialSizingHelper =
+@@ -377,11 +389,11 @@ class AppMenuHandlerImpl
+                     public int getInitialHeightForView(int index) {
+                         if (mModelList == null) {
+                             assert false : "ModelList is null";
+                             return 0;
+                         }
+-                        ListItem item = mModelList.get(index);
++                        ListItem item = (ListItem) adapter.getItem(index);
+                         BiFunction<Context, PropertyModel, Integer> customSizingProvider =
+                                 customSizingProviders.get(item.type);
+                         if (customSizingProvider != null) {
+                             return customSizingProvider.apply(mContext, item.model);
+                         }
+@@ -392,11 +404,11 @@ class AppMenuHandlerImpl
+                     public boolean canBeLastVisibleInitialView(int index) {
+                         if (mModelList == null) {
+                             assert false : "ModelList is null";
+                             return false;
+                         }
+-                        int type = mModelList.get(index).type;
++                        int type = ((ListItem) adapter.getItem(index)).type;
+                         return type != AppMenuItemType.DIVIDER && type != AppMenuItemType.HEADER;
+                     }
+                 };
+ 
+         mAppMenu.updateMenu(initialSizingHelper, adapter);
+@@ -420,11 +432,12 @@ class AppMenuHandlerImpl
+                                     finalAnchorView,
+                                     finalIsByPermanentButton,
+                                     rotation,
+                                     mAppRect.get(),
+                                     startDragging,
+-                                    isFromBottomBar);
++                                    isFromBottomBar,
++                                    controlsPosition);
+                             // https://github.com/uber/NullAway/issues/1190
+                             assumeNonNull(mKeyboardVisibilityListener);
+                             keyboardVisibilityDelegate.removeKeyboardVisibilityListener(
+                                     mKeyboardVisibilityListener);
+                         }
+@@ -437,11 +450,12 @@ class AppMenuHandlerImpl
+                     anchorView,
+                     isByPermanentButton,
+                     rotation,
+                     mAppRect.get(),
+                     startDragging,
+-                    isFromBottomBar);
++                    isFromBottomBar,
++                    controlsPosition);
+         }
+         return true;
+     }
+ 
+     @Override
+@@ -793,11 +807,12 @@ class AppMenuHandlerImpl
+             View anchorView,
+             boolean isByPermanentButton,
+             Integer rotation,
+             Rect appRect,
+             boolean startDragging,
+-            boolean isFromBottomBar) {
++            boolean isFromBottomBar,
++            @ControlsPosition int controlsPosition) {
+         // Use full size of window for abnormal appRect.
+         if (appRect.left < 0 && appRect.top < 0) {
+             appRect.left = 0;
+             appRect.top = 0;
+             appRect.right = mDecorView.getWidth();
+@@ -812,12 +827,12 @@ class AppMenuHandlerImpl
+                 appRect,
+                 mDelegate.buildFooterView(this),
+                 mDelegate.buildHeaderView(),
+                 mHighlightMenuId,
+                 mDelegate.isMenuIconAtStart(),
+-                mBrowserControlsStateProvider.getControlsPosition(),
+-                addTopPaddingBeforeFirstRow(),
++                controlsPosition,
++                addTopPaddingBeforeFirstRow(controlsPosition),
+                 isFromBottomBar,
+                 this);
+         assumeNonNull(mAppMenuDragHelper);
+         mAppMenuDragHelper.onShow(startDragging);
+ 
+@@ -844,13 +859,14 @@ class AppMenuHandlerImpl
+         clearMenuHighlight();
+         RecordUserAction.record("MobileMenuShow");
+         mDelegate.onMenuShown();
+     }
+ 
+-    private boolean addTopPaddingBeforeFirstRow() {
++    private boolean addTopPaddingBeforeFirstRow(@ControlsPosition int controlsPosition) {
+         if (mModelList == null || mModelList.isEmpty()) return false;
+-        return mModelList.get(0).type != AppMenuItemType.BUTTON_ROW;
++        int firstIndex = controlsPosition == ControlsPosition.BOTTOM ? mModelList.size() - 1 : 0;
++        return mModelList.get(firstIndex).type != AppMenuItemType.BUTTON_ROW;
+     }
+ 
+     @Override
+     public Rect getPopupRect(AppMenuPopup popupWindow) {
+         return popupWindow.getPopupRect();
+@@ -891,11 +907,11 @@ class AppMenuHandlerImpl
+         ModelList modelList = new ModelList();
+ 
+         assert (items.size() > 0);
+         modelList.addAll(items);
+ 
+-        AppMenuAdapter adapter = new AppMenuAdapter(modelList);
++        AppMenuAdapter adapter = new AppMenuAdapter(modelList, /* reverseItems= */ false);
+         SparseArray<BiFunction<Context, PropertyModel, Integer>> customSizingProviders =
+                 new SparseArray<>();
+         registerViewBinders(adapter, customSizingProviders, mDelegate.shouldShowIconBeforeItem());
+ 
+         assert mAppMenu != null;
+diff --git a/ui/android/java/src/org/chromium/ui/modelutil/ModelListAdapter.java b/ui/android/java/src/org/chromium/ui/modelutil/ModelListAdapter.java
+index 0d9b47472e9ed..41fad748b1b69 100644
+--- a/ui/android/java/src/org/chromium/ui/modelutil/ModelListAdapter.java
++++ b/ui/android/java/src/org/chromium/ui/modelutil/ModelListAdapter.java
+@@ -82,11 +82,11 @@ public class ModelListAdapter extends BaseAdapter implements MVCListAdapter {
+         return mModelList.size();
+     }
+ 
+     @Override
+     public Object getItem(int position) {
+-        return mModelList.get(position);
++        return mModelList.get(getModelIndex(position));
+     }
+ 
+     @Override
+     public long getItemId(int position) {
+         return position;
+@@ -99,11 +99,11 @@ public class ModelListAdapter extends BaseAdapter implements MVCListAdapter {
+         mViewBuilderMap.put(typeId, new Pair<>(builder, binder));
+     }
+ 
+     @Override
+     public int getItemViewType(int position) {
+-        int viewType = mModelList.get(position).type;
++        int viewType = mModelList.get(getModelIndex(position)).type;
+         assert viewType >= 0 && viewType < getViewTypeCount()
+                 : "View types must be contiguous and within the range of 0 to type count - 1";
+         return viewType;
+     }
+ 
+@@ -166,11 +166,11 @@ public class ModelListAdapter extends BaseAdapter implements MVCListAdapter {
+             convertView.setTag(R.id.view_type, desiredViewType);
+         } else {
+             oldModel = (PropertyModel) convertView.getTag(R.id.view_model);
+         }
+ 
+-        var listItem = mModelList.get(position);
++        var listItem = mModelList.get(getModelIndex(position));
+         PropertyModel model = listItem.model;
+         PropertyModelChangeProcessor.ViewBinder binder =
+                 assumeNonNull(mViewBuilderMap.get(listItem.type)).second;
+ 
+         // 3. Attach a PropertyModelChangeProcessor and PropertyModel to the view (for #1/2 above
+@@ -188,10 +188,14 @@ public class ModelListAdapter extends BaseAdapter implements MVCListAdapter {
+         convertView.jumpDrawablesToCurrentState();
+ 
+         return convertView;
+     }
+ 
++    protected int getModelIndex(int position) {
++        return position;
++    }
++
+     /**
+      * Binds all set properties to the view. If oldModel is not null, binds properties that were
+      * previously set in the oldModel but are not set in the new model.
+      *
+      * @param newModel The new model to bind to {@code view}.
+-- 
+2.54.0
+
