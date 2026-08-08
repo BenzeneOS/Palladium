@@ -1,0 +1,52 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Amaan Qureshi <git@amaanq.com>
+Date: Sat, 8 Aug 2026 16:00:09 -0400
+Subject: [PATCH] extensions: show action popups on phone
+
+Tablet toolbars register width consumers that re-run reconcileActionItems()
+after requestActionVisibility() pops out an action, which is what materializes
+the button the popup anchors on. ToolbarPhone registers none, so
+showPopupOnAnchor() found no button view and destroyed the freshly created
+ExtensionViewHost, making browser action popups silently no-op on phones.
+Reconcile directly when no width pipeline exists, and mirror it in
+undoPopout() so the popped-out button does not linger.
+---
+ .../toolbar/extensions/ExtensionActionListMediator.java    | 7 +++++++
+ 1 file changed, 7 insertions(+)
+
+diff --git a/chrome/browser/ui/android/toolbar/java/src/org/chromium/chrome/browser/toolbar/extensions/ExtensionActionListMediator.java b/chrome/browser/ui/android/toolbar/java/src/org/chromium/chrome/browser/toolbar/extensions/ExtensionActionListMediator.java
+index a072668c25f15..09e60870eeb1a 100644
+--- a/chrome/browser/ui/android/toolbar/java/src/org/chromium/chrome/browser/toolbar/extensions/ExtensionActionListMediator.java
++++ b/chrome/browser/ui/android/toolbar/java/src/org/chromium/chrome/browser/toolbar/extensions/ExtensionActionListMediator.java
+@@ -639,10 +639,14 @@ class ExtensionActionListMediator implements Destroyable {
+ 
+         mRecyclerViewDelegate.addOnAnimationsFinishedRunnable(runnable);
+ 
+         if (findIndexForId(actionId) == -1) {
+             mPoppedOutActionId = actionId;
++            // Phone toolbars have no width consumers to re-run reconcileActionItems().
++            if (mAvailableWidthForPinnedActions == null) {
++                reconcileActionItems();
++            }
+         }
+ 
+         // Force the toolbar to recalculate the toolbar ranking and provide us with a new {@code
+         // availableWidth}, given that the amount we'll use has changed.
+         // Also, when no animation is necessary (e.g. the action is already pinned), this will
+@@ -653,10 +657,13 @@ class ExtensionActionListMediator implements Destroyable {
+ 
+     @VisibleForTesting
+     void undoPopout() {
+         if (mPoppedOutActionId != null) {
+             mPoppedOutActionId = null;
++            if (mAvailableWidthForPinnedActions == null) {
++                reconcileActionItems();
++            }
+ 
+             // Request layout to update available width and trigger updates.
+             mRecyclerViewDelegate.requestLayoutWithViewUtils();
+         }
+     }
+-- 
+2.54.0
+
