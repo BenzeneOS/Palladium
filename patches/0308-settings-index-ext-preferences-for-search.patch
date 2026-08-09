@@ -1,0 +1,75 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Amaan Qureshi <git@amaanq.com>
+Date: Sat, 8 Aug 2026 21:27:10 -0400
+Subject: [PATCH] settings: index the ext preferences for search
+
+PrivacySettings registers one SearchIndexProvider for R.xml.privacy_preferences,
+but PrivacySettingsExt inflates R.xml.privacy_preferences_ext separately at
+runtime, so every Vanadium ext preference was absent from settings search.
+Parse the ext resource into the same index so entries like open links in
+incognito and the extensions toolbar button are findable.
+---
+ .../privacy/settings/PrivacySettings.java     | 21 +++++++++++++++++++
+ 1 file changed, 21 insertions(+)
+
+diff --git a/chrome/android/java/src/org/chromium/chrome/browser/privacy/settings/PrivacySettings.java b/chrome/android/java/src/org/chromium/chrome/browser/privacy/settings/PrivacySettings.java
+index 2671f80fe8026..69878967ded02 100644
+--- a/chrome/android/java/src/org/chromium/chrome/browser/privacy/settings/PrivacySettings.java
++++ b/chrome/android/java/src/org/chromium/chrome/browser/privacy/settings/PrivacySettings.java
+@@ -64,10 +64,12 @@ import org.chromium.chrome.browser.sync.settings.ManageSyncSettings;
+ import org.chromium.chrome.browser.usage_stats.UsageStatsConsentDialog;
+ import org.chromium.components.browser_ui.settings.ChromeSwitchPreference;
+ import org.chromium.components.browser_ui.settings.SettingsFragment;
+ import org.chromium.components.browser_ui.settings.SettingsNavigation;
+ import org.chromium.components.browser_ui.settings.SettingsUtils;
++import org.chromium.components.browser_ui.settings.search.PreferenceParser;
++import org.chromium.components.browser_ui.settings.search.SearchIndexProvider;
+ import org.chromium.components.browser_ui.settings.search.SettingsIndexData;
+ import org.chromium.components.browser_ui.site_settings.ContentSettingsResources;
+ import org.chromium.components.browser_ui.site_settings.SingleCategorySettings;
+ import org.chromium.components.browser_ui.site_settings.WebsitePreferenceBridge;
+ import org.chromium.components.browser_ui.util.TraceEventVectorDrawableCompat;
+@@ -79,10 +81,11 @@ import org.chromium.ui.modelutil.PropertyModel;
+ import org.chromium.ui.modelutil.PropertyModelChangeProcessor;
+ import org.chromium.ui.text.ChromeClickableSpan;
+ import org.chromium.ui.text.SpanApplier;
+ import org.chromium.ui.widget.ChromeBulletSpan;
+ 
++import java.util.Map;
+ import java.util.concurrent.TimeUnit;
+ import java.util.function.Consumer;
+ 
+ /** Fragment to keep track of the all the privacy related preferences. */
+ @NullMarked
+@@ -651,10 +654,28 @@ public class PrivacySettings extends ChromeBaseSettingsFragment
+ 
+     public static final ChromeBaseSearchIndexProvider SEARCH_INDEX_DATA_PROVIDER =
+             new ChromeBaseSearchIndexProvider(
+                     PrivacySettings.class.getName(), R.xml.privacy_preferences) {
+ 
++                @Override
++                public void initPreferenceXml(
++                        Context context,
++                        Profile profile,
++                        SettingsIndexData indexData,
++                        Map<String, SearchIndexProvider> providerMap) {
++                    super.initPreferenceXml(context, profile, indexData, providerMap);
++                    // The ext preferences are inflated separately, so index them too.
++                    PreferenceParser.parseAndPopulate(
++                            context,
++                            R.xml.privacy_preferences_ext,
++                            indexData,
++                            getPrefFragmentName(),
++                            getExtras(context),
++                            providerMap,
++                            isSearchable());
++                }
++
+                 @Override
+                 public void updateDynamicPreferences(
+                         Context context, SettingsIndexData indexData, Profile profile) {
+                     String frag = PrivacySettings.class.getName();
+                     PrivacySandboxBridge bridge = new PrivacySandboxBridge(profile);
+-- 
+2.54.0
+
