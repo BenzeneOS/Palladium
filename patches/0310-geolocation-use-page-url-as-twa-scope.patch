@@ -1,0 +1,313 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Amaan Qureshi <git@amaanq.com>
+Date: Thu, 13 Aug 2026 06:12:56 -0400
+Subject: [PATCH] geolocation: use the page URL as the TWA scope for delegation
+
+InstalledWebappGeolocationBridge handed androidx the bare origin, but
+TrustedWebActivityServiceConnectionPool.createServiceIntent() resolves the
+owning client package by querying VIEW activities for that URI, so an origin
+can never match a TWA whose intent filter is path scoped. Maps Go registers
+/maps, so every delegated request died in createServiceIntent with
+IllegalArgumentException("No service exists for scope") before any bind, which
+is why tiles rendered while the location dot never appeared. The sibling path
+in LocationPermissionUpdater already passes lastCommitedUrl for this reason.
+GetTwaScopeUrl() prefers the WebContents last committed URL and falls back to
+the origin unless it is same origin, leaving origin_ to keep driving permission
+revocation.
+---
+ .../tab_web_contents_delegate_android.cc      |  7 +++++--
+ .../tab_web_contents_delegate_android.h       |  3 ++-
+ ...ion_permission_context_delegate_android.cc |  3 ++-
+ .../installed_webapp_geolocation_bridge.cc    |  4 +++-
+ .../installed_webapp_geolocation_bridge.h     |  4 ++++
+ .../installed_webapp_geolocation_context.cc   | 20 ++++++++++++++++---
+ .../installed_webapp_geolocation_context.h    | 11 +++++++++-
+ .../browser/web_contents/web_contents_impl.cc |  2 +-
+ .../public/browser/web_contents_delegate.cc   |  2 +-
+ .../public/browser/web_contents_delegate.h    |  2 +-
+ 10 files changed, 46 insertions(+), 12 deletions(-)
+
+diff --git a/chrome/browser/android/tab_web_contents_delegate_android.cc b/chrome/browser/android/tab_web_contents_delegate_android.cc
+index 9d0302db1b3d1..f42cb5a62ac19 100644
+--- a/chrome/browser/android/tab_web_contents_delegate_android.cc
++++ b/chrome/browser/android/tab_web_contents_delegate_android.cc
+@@ -550,17 +550,20 @@ TabWebContentsDelegateAndroid::IsPrerender2Supported(
+       Profile::FromBrowserContext(web_contents.GetBrowserContext());
+   return prefetch::IsSomePreloadingEnabled(*profile->GetPrefs());
+ }
+ 
+ device::mojom::GeolocationContext*
+-TabWebContentsDelegateAndroid::GetInstalledWebappGeolocationContext() {
++TabWebContentsDelegateAndroid::GetInstalledWebappGeolocationContext(
++    content::WebContents* source) {
+   if (!IsInstalledWebappDelegateGeolocation())
+     return nullptr;
+ 
+   if (!installed_webapp_geolocation_context_) {
+     installed_webapp_geolocation_context_ =
+-        std::make_unique<InstalledWebappGeolocationContext>();
++        std::make_unique<InstalledWebappGeolocationContext>(
++            source ? source->GetWeakPtr()
++                   : base::WeakPtr<content::WebContents>());
+   }
+   return installed_webapp_geolocation_context_.get();
+ }
+ 
+ void TabWebContentsDelegateAndroid::GetAIPageContent(
+diff --git a/chrome/browser/android/tab_web_contents_delegate_android.h b/chrome/browser/android/tab_web_contents_delegate_android.h
+index 0b801110bc489..16bbfb8be478b 100644
+--- a/chrome/browser/android/tab_web_contents_delegate_android.h
++++ b/chrome/browser/android/tab_web_contents_delegate_android.h
+@@ -120,11 +120,12 @@ class TabWebContentsDelegateAndroid
+   void ExitPictureInPicture() override;
+   bool IsBackForwardCacheSupported(content::WebContents& web_contents) override;
+   content::PreloadingEligibility IsPrerender2Supported(
+       content::WebContents& web_contents,
+       content::PreloadingTriggerType trigger_type) override;
+-  device::mojom::GeolocationContext* GetInstalledWebappGeolocationContext()
++  device::mojom::GeolocationContext* GetInstalledWebappGeolocationContext(
++      content::WebContents* source)
+       override;
+   content::KeyboardEventProcessingResult PreHandleKeyboardEvent(
+       content::WebContents* source,
+       const input::NativeWebKeyboardEvent& event) override;
+   void RequestPointerLock(content::WebContents* web_contents,
+diff --git a/chrome/browser/geolocation/geolocation_permission_context_delegate_android.cc b/chrome/browser/geolocation/geolocation_permission_context_delegate_android.cc
+index 9ecd21f6ed991..dc3c8f25a4d84 100644
+--- a/chrome/browser/geolocation/geolocation_permission_context_delegate_android.cc
++++ b/chrome/browser/geolocation/geolocation_permission_context_delegate_android.cc
+@@ -46,11 +46,12 @@ bool GeolocationPermissionContextDelegateAndroid::DecidePermission(
+   content::WebContents* web_contents =
+       content::WebContents::FromRenderFrameHost(rfh);
+   DCHECK(web_contents);
+ 
+   if (web_contents->GetDelegate() &&
+-      web_contents->GetDelegate()->GetInstalledWebappGeolocationContext()) {
++      web_contents->GetDelegate()->GetInstalledWebappGeolocationContext(
++          web_contents)) {
+     ContentSettingsType type =
+         content_settings::GeolocationContentSettingsType();
+     CHECK_EQ(permissions::RequestTypeToContentSettingsType(
+                  request_data.request_type.value())
+                  .value(),
+diff --git a/chrome/browser/webapps/installable/installed_webapp_geolocation_bridge.cc b/chrome/browser/webapps/installable/installed_webapp_geolocation_bridge.cc
+index 72c46155d4ea6..e3c53e275ec44 100644
+--- a/chrome/browser/webapps/installable/installed_webapp_geolocation_bridge.cc
++++ b/chrome/browser/webapps/installable/installed_webapp_geolocation_bridge.cc
+@@ -20,13 +20,15 @@
+ #include "chrome/android/chrome_jni_headers/InstalledWebappGeolocationBridge_jni.h"
+ 
+ InstalledWebappGeolocationBridge::InstalledWebappGeolocationBridge(
+     mojo::PendingReceiver<Geolocation> receiver,
+     const url::Origin& origin,
++    const GURL& twa_scope_url,
+     InstalledWebappGeolocationContext* context)
+     : context_(context),
+       origin_(origin),
++      twa_scope_url_(twa_scope_url),
+       high_accuracy_(false),
+       receiver_(this, std::move(receiver)) {
+   DCHECK(context_);
+   receiver_.set_disconnect_handler(
+       base::BindOnce(&InstalledWebappGeolocationBridge::OnConnectionError,
+@@ -40,11 +42,11 @@ InstalledWebappGeolocationBridge::~InstalledWebappGeolocationBridge() {
+ void InstalledWebappGeolocationBridge::StartListeningForUpdates() {
+   JNIEnv* env = base::android::AttachCurrentThread();
+   if (java_ref_.is_null()) {
+     java_ref_.Reset(InstalledWebappGeolocationBridgeJni::create(
+         env, reinterpret_cast<intptr_t>(this),
+-        url::GURLAndroid::FromNativeGURL(env, origin_.GetURL())));
++        url::GURLAndroid::FromNativeGURL(env, twa_scope_url_)));
+   }
+   java_ref_->start(env, high_accuracy_);
+ }
+ 
+ void InstalledWebappGeolocationBridge::StopUpdates() {
+diff --git a/chrome/browser/webapps/installable/installed_webapp_geolocation_bridge.h b/chrome/browser/webapps/installable/installed_webapp_geolocation_bridge.h
+index 755c38d0e1a14..cf001f5dd21be 100644
+--- a/chrome/browser/webapps/installable/installed_webapp_geolocation_bridge.h
++++ b/chrome/browser/webapps/installable/installed_webapp_geolocation_bridge.h
+@@ -11,10 +11,11 @@
+ #include "base/memory/raw_ptr.h"
+ #include "chrome/android/chrome_jni_headers/InstalledWebappGeolocationBridge_shared_jni.h"
+ #include "mojo/public/cpp/bindings/receiver.h"
+ #include "services/device/public/mojom/geolocation.mojom.h"
+ #include "services/device/public/mojom/geoposition.mojom.h"
++#include "url/gurl.h"
+ #include "url/origin.h"
+ 
+ class InstalledWebappGeolocationContext;
+ 
+ // Implements the Geolocation Mojo interface.
+@@ -22,10 +23,11 @@ class InstalledWebappGeolocationBridge : public device::mojom::Geolocation {
+  public:
+   // |context| must outlive this object.
+   InstalledWebappGeolocationBridge(
+       mojo::PendingReceiver<device::mojom::Geolocation> receiver,
+       const url::Origin& origin,
++      const GURL& twa_scope_url,
+       InstalledWebappGeolocationContext* context);
+   InstalledWebappGeolocationBridge(const InstalledWebappGeolocationBridge&) =
+       delete;
+   InstalledWebappGeolocationBridge& operator=(
+       const InstalledWebappGeolocationBridge&) = delete;
+@@ -82,10 +84,12 @@ class InstalledWebappGeolocationBridge : public device::mojom::Geolocation {
+ 
+   device::mojom::GeopositionResultPtr current_position_;
+ 
+   const url::Origin origin_;
+ 
++  const GURL twa_scope_url_;
++
+   // Whether this instance is currently observing location updates with high
+   // accuracy.
+   bool high_accuracy_;
+ 
+   base::android::ScopedJavaGlobalRef<JInstalledWebappGeolocationBridge>
+diff --git a/chrome/browser/webapps/installable/installed_webapp_geolocation_context.cc b/chrome/browser/webapps/installable/installed_webapp_geolocation_context.cc
+index 05e309c04febc..61852c63f56b9 100644
+--- a/chrome/browser/webapps/installable/installed_webapp_geolocation_context.cc
++++ b/chrome/browser/webapps/installable/installed_webapp_geolocation_context.cc
+@@ -8,23 +8,37 @@
+ #include <vector>
+ 
+ #include "chrome/browser/webapps/installable/installed_webapp_geolocation_bridge.h"
+ #include "url/origin.h"
+ 
+-InstalledWebappGeolocationContext::InstalledWebappGeolocationContext() =
+-    default;
++InstalledWebappGeolocationContext::InstalledWebappGeolocationContext(
++    base::WeakPtr<content::WebContents> web_contents)
++    : web_contents_(std::move(web_contents)) {}
+ 
+ InstalledWebappGeolocationContext::~InstalledWebappGeolocationContext() =
+     default;
+ 
++GURL InstalledWebappGeolocationContext::GetTwaScopeUrl(
++    const url::Origin& requesting_origin) const {
++  if (web_contents_) {
++    const GURL& last_committed_url = web_contents_->GetLastCommittedURL();
++    if (last_committed_url.is_valid() &&
++        url::Origin::Create(last_committed_url) == requesting_origin) {
++      return last_committed_url;
++    }
++  }
++  return requesting_origin.GetURL();
++}
++
+ void InstalledWebappGeolocationContext::BindGeolocation(
+     mojo::PendingReceiver<device::mojom::Geolocation> receiver,
+     const url::Origin& requesting_origin,
+     device::mojom::GeolocationClientId client_id,
+     bool has_precise_permission) {
+   impls_.push_back(std::make_unique<InstalledWebappGeolocationBridge>(
+-      std::move(receiver), requesting_origin, this));
++      std::move(receiver), requesting_origin, GetTwaScopeUrl(requesting_origin),
++      this));
+   if (geoposition_override_)
+     impls_.back()->SetOverride(geoposition_override_.Clone());
+   else
+     impls_.back()->StartListeningForUpdates();
+ }
+diff --git a/chrome/browser/webapps/installable/installed_webapp_geolocation_context.h b/chrome/browser/webapps/installable/installed_webapp_geolocation_context.h
+index 669ff26c3767b..b9b29306e4e6b 100644
+--- a/chrome/browser/webapps/installable/installed_webapp_geolocation_context.h
++++ b/chrome/browser/webapps/installable/installed_webapp_geolocation_context.h
+@@ -6,10 +6,12 @@
+ #define CHROME_BROWSER_WEBAPPS_INSTALLABLE_INSTALLED_WEBAPP_GEOLOCATION_CONTEXT_H_
+ 
+ #include <memory>
+ #include <vector>
+ 
++#include "base/memory/weak_ptr.h"
++#include "content/public/browser/web_contents.h"
+ #include "mojo/public/cpp/bindings/pending_receiver.h"
+ #include "services/device/public/mojom/geolocation.mojom.h"
+ #include "services/device/public/mojom/geolocation_client_id.mojom.h"
+ #include "services/device/public/mojom/geolocation_context.mojom.h"
+ #include "services/device/public/mojom/geoposition.mojom.h"
+@@ -21,11 +23,12 @@ class InstalledWebappGeolocationBridge;
+ // that are associated with a given context. Notably, allows pausing and
+ // resuming geolocation on these instances.
+ class InstalledWebappGeolocationContext
+     : public device::mojom::GeolocationContext {
+  public:
+-  InstalledWebappGeolocationContext();
++  explicit InstalledWebappGeolocationContext(
++      base::WeakPtr<content::WebContents> web_contents);
+   InstalledWebappGeolocationContext(const InstalledWebappGeolocationContext&) =
+       delete;
+   InstalledWebappGeolocationContext& operator=(
+       const InstalledWebappGeolocationContext&) = delete;
+   ~InstalledWebappGeolocationContext() override;
+@@ -50,10 +53,16 @@ class InstalledWebappGeolocationContext
+ 
+   // Called when the geolocation permission to an origin has been revoked.
+   void OnPermissionRevoked(const url::Origin& origin);
+ 
+  private:
++  // androidx resolves the client package by querying VIEW activities for this
++  // URL, so a bare origin never matches a TWA whose scope is a path.
++  GURL GetTwaScopeUrl(const url::Origin& requesting_origin) const;
++
++  base::WeakPtr<content::WebContents> web_contents_;
++
+   std::vector<std::unique_ptr<InstalledWebappGeolocationBridge>> impls_;
+ 
+   device::mojom::GeopositionResultPtr geoposition_override_;
+ };
+ 
+diff --git a/content/browser/web_contents/web_contents_impl.cc b/content/browser/web_contents/web_contents_impl.cc
+index 7edad76e875c0..73c416d20b05b 100644
+--- a/content/browser/web_contents/web_contents_impl.cc
++++ b/content/browser/web_contents/web_contents_impl.cc
+@@ -6367,11 +6367,11 @@ void WebContentsImpl::UnrecoverableAccessibilityError() {
+ 
+ device::mojom::GeolocationContext* WebContentsImpl::GetGeolocationContext() {
+   OPTIONAL_TRACE_EVENT0("content", "WebContentsImpl::GetGeolocationContext");
+   if (delegate_) {
+     auto* installed_webapp_context =
+-        delegate_->GetInstalledWebappGeolocationContext();
++        delegate_->GetInstalledWebappGeolocationContext(this);
+     if (installed_webapp_context) {
+       return installed_webapp_context;
+     }
+   }
+ 
+diff --git a/content/public/browser/web_contents_delegate.cc b/content/public/browser/web_contents_delegate.cc
+index 5ec5f9ca15d75..b14895cced55c 100644
+--- a/content/public/browser/web_contents_delegate.cc
++++ b/content/public/browser/web_contents_delegate.cc
+@@ -448,11 +448,11 @@ bool WebContentsDelegate::ShouldShowStaleContentOnEviction(
+     WebContents* source) {
+   return false;
+ }
+ 
+ device::mojom::GeolocationContext*
+-WebContentsDelegate::GetInstalledWebappGeolocationContext() {
++WebContentsDelegate::GetInstalledWebappGeolocationContext(WebContents* source) {
+   return nullptr;
+ }
+ 
+ bool WebContentsDelegate::IsPrivileged() {
+   return false;
+diff --git a/content/public/browser/web_contents_delegate.h b/content/public/browser/web_contents_delegate.h
+index 7cd96eea6314b..bdb073f2e2bf4 100644
+--- a/content/public/browser/web_contents_delegate.h
++++ b/content/public/browser/web_contents_delegate.h
+@@ -849,11 +849,11 @@ class CONTENT_EXPORT WebContentsDelegate {
+ 
+   // Returns a  InstalledWebappGeolocationContext if this web content is running
+   // in a installed webapp and geolocation should be deleagted from the
+   // installed webapp; otherwise returns nullptr.
+   virtual device::mojom::GeolocationContext*
+-  GetInstalledWebappGeolocationContext();
++  GetInstalledWebappGeolocationContext(WebContents* source);
+ 
+   // Whether the WebContents is privileged.
+   // It's used to prevent drag and drop between privileged and non-privileged
+   // WebContents.
+   virtual bool IsPrivileged();
+-- 
+2.54.0
+
