@@ -1,0 +1,40 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Amaan Qureshi <git@amaanq.com>
+Date: Tue, 11 Aug 2026 22:03:52 -0400
+Subject: [PATCH] geolocation: disable approximate location permission on
+ Android
+
+The APPROXIMATE_GEOLOCATION_PERMISSION guard in LocationProviderAndroid.start()
+hard-errors any enableHighAccuracy:false request while the app holds
+ACCESS_FINE_LOCATION, since Criteria cannot synthesize a coarse fix from a
+precise provider. Chrome escapes this through the GmsCore fused provider, which
+Vanadium does not have, so every site issuing a low-accuracy request gets
+"Cannot generate approximate location." instead of a position. GeolocationProviderImpl
+also sets is_running_precise_ from low_accuracy_callbacks_.empty(), so one such
+client drags concurrent high-accuracy watches down with it and Google Maps fails
+outright. Users wanting coarse results can still grant approximate permission at
+the OS level.
+---
+ components/content_settings/core/common/features.cc | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/components/content_settings/core/common/features.cc b/components/content_settings/core/common/features.cc
+index b9bf606282d61..cea668157ff44 100644
+--- a/components/content_settings/core/common/features.cc
++++ b/components/content_settings/core/common/features.cc
+@@ -37,11 +37,11 @@ const base::FeatureParam<bool> kSafetyCheckUnusedSitePermissionsWithDelay{
+     &kSafetyCheckUnusedSitePermissions,
+     "unused-site-permissions-with-delay-for-testing", false};
+ 
+ BASE_FEATURE(kApproximateGeolocationPermission,
+ #if BUILDFLAG(IS_ANDROID)
+-             base::FEATURE_ENABLED_BY_DEFAULT
++             base::FEATURE_DISABLED_BY_DEFAULT
+ #else
+              base::FEATURE_DISABLED_BY_DEFAULT
+ #endif
+ );
+ 
+-- 
+2.54.0
+
