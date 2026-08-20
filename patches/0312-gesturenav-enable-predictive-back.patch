@@ -1,0 +1,30 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Amaan Qureshi <git@amaanq.com>
+Date: Thu, 20 Aug 2026 19:06:11 -0400
+Subject: [PATCH] gesturenav: enable predictive back so edge swipes report
+ their edge
+
+---
+ chrome/android/java/AndroidManifest.xml | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/chrome/android/java/AndroidManifest.xml b/chrome/android/java/AndroidManifest.xml
+index 9710580a3951a..afb2fbae64819 100644
+--- a/chrome/android/java/AndroidManifest.xml
++++ b/chrome/android/java/AndroidManifest.xml
+@@ -234,11 +234,11 @@ by a child template that "extends" this file.
+         {% else %}
+         android:allowBackup="false"
+         {% endif %}
+         android:networkSecurityConfig="@xml/network_security_config"
+         android:appComponentFactory="org.chromium.chrome.browser.base.SplitCompatAppComponentFactory"
+-        android:enableOnBackInvokedCallback="false"
++        android:enableOnBackInvokedCallback="true"
+         android:zygotePreloadNativeLib="lib{{ library_name }}.so"
+         {% block extra_application_attributes %}{% endblock %}>
+ 
+         {% if channel in ['canary', 'dev', 'default'] %}
+         <profileable android:shell="true"/>
+-- 
+2.54.0
+
