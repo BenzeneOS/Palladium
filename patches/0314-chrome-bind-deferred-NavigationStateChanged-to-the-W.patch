@@ -1,0 +1,86 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Amaan Qureshi <git@amaanq.com>
+Date: Thu, 20 Aug 2026 23:40:45 -0400
+Subject: [PATCH] chrome: bind deferred NavigationStateChanged to the
+ WebContents weakly
+
+kDeferNavigationStateChanged posts the notification with a raw WebContents
+pointer and nothing keeps it alive until the task runs, which trips the
+dangling raw_ptr detector when the WebContents dies first. Carry a WeakPtr
+and drop the notification instead.
+---
+ .../tab_web_contents_delegate_android.cc        | 17 ++++++++++++++---
+ .../android/tab_web_contents_delegate_android.h |  3 +++
+ 2 files changed, 17 insertions(+), 3 deletions(-)
+
+diff --git a/chrome/browser/android/tab_web_contents_delegate_android.cc b/chrome/browser/android/tab_web_contents_delegate_android.cc
+index 5b3d5cb575f1a..8c2827a1e0646 100644
+--- a/chrome/browser/android/tab_web_contents_delegate_android.cc
++++ b/chrome/browser/android/tab_web_contents_delegate_android.cc
+@@ -202,20 +202,31 @@ bool TabWebContentsDelegateAndroid::ShouldFocusLocationBarByDefault(
+ void TabWebContentsDelegateAndroid::NavigationStateChanged(
+     WebContents* source,
+     content::InvalidateTypes changed_flags) {
+   if (base::FeatureList::IsEnabled(
+           chrome::android::kDeferNavigationStateChanged)) {
++    // Bind the WebContents weakly. Tab group container migration can destroy
++    // it before the deferred task runs.
+     base::SingleThreadTaskRunner::GetCurrentDefault()->PostTask(
+         FROM_HERE,
+-        base::BindOnce(
+-            &TabWebContentsDelegateAndroid::NavigationStateChangedDeferred,
+-            weak_ptr_factory_.GetWeakPtr(), source, changed_flags));
++        base::BindOnce(&TabWebContentsDelegateAndroid::NavigationStateChangedWeak,
++                       weak_ptr_factory_.GetWeakPtr(), source->GetWeakPtr(),
++                       changed_flags));
+     return;
+   }
+   NavigationStateChangedDeferred(source, changed_flags);
+ }
+ 
++void TabWebContentsDelegateAndroid::NavigationStateChangedWeak(
++    base::WeakPtr<WebContents> source,
++    content::InvalidateTypes changed_flags) {
++  if (!source) {
++    return;
++  }
++  NavigationStateChangedDeferred(source.get(), changed_flags);
++}
++
+ void TabWebContentsDelegateAndroid::NavigationStateChangedDeferred(
+     WebContents* source,
+     content::InvalidateTypes changed_flags) {
+   WebContentsDelegateAndroid::NavigationStateChanged(source, changed_flags);
+ }
+diff --git a/chrome/browser/android/tab_web_contents_delegate_android.h b/chrome/browser/android/tab_web_contents_delegate_android.h
+index 16bbfb8be478b..30c36183bdfda 100644
+--- a/chrome/browser/android/tab_web_contents_delegate_android.h
++++ b/chrome/browser/android/tab_web_contents_delegate_android.h
+@@ -6,10 +6,11 @@
+ #define CHROME_BROWSER_ANDROID_TAB_WEB_CONTENTS_DELEGATE_ANDROID_H_
+ 
+ #include <memory>
+ #include <optional>
+ 
++#include "base/memory/weak_ptr.h"
+ #include "base/scoped_multi_source_observation.h"
+ #include "components/embedder_support/android/delegate/web_contents_delegate_android.h"
+ #include "components/find_in_page/find_result_observer.h"
+ #include "components/find_in_page/find_tab_helper.h"
+ #include "components/paint_preview/buildflags/buildflags.h"
+@@ -182,10 +183,12 @@ class TabWebContentsDelegateAndroid
+       find_result_observations_{this};
+ 
+   // Timestamp when the user last successfully escaped from a lock request.
+   base::TimeTicks pointer_lock_last_user_escape_time_;
+ 
++  void NavigationStateChangedWeak(base::WeakPtr<content::WebContents> source,
++                                  content::InvalidateTypes changed_flags);
+   void NavigationStateChangedDeferred(content::WebContents* source,
+                                       content::InvalidateTypes changed_flags);
+ 
+   base::WeakPtrFactory<TabWebContentsDelegateAndroid> weak_ptr_factory_{this};
+ };
+-- 
+2.54.0
+
