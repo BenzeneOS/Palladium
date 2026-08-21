@@ -1,0 +1,1560 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Amaan Qureshi <git@amaanq.com>
+Date: Thu, 20 Aug 2026 23:53:44 -0400
+Subject: [PATCH] tabgroups: per-group container storage isolation
+
+A shared default jar lets sites correlate otherwise separate tab groups.
+Each group therefore keeps an on-disk StoragePartition keyed by its stable
+group token. Group deletion is journaled before clearing and retried after a
+crash, while Clear Browsing Data waits for every registered group partition.
+Child creation follows the tab model grouping decision, while fixed siteless
+SiteInstances retain the requested partition across chrome-native commits.
+---
+chrome/android/chrome_java_sources.gni              |   1 +
+...hrome/browser/tab/TabGroupContainerMigrator.java | 247 ++++++++++++++++++++++
+...src/org/chromium/chrome/browser/tab/TabImpl.java |  36 ++-
+...um/chrome/browser/tabmodel/ChromeTabCreator.java |  33 +-
+.../browser/tabmodel/TabCollectionTabModelImpl.java |  15 +-
+chrome/browser/android/BUILD.gn                     |   1 +
+...m/chrome/browser/content/WebContentsFactory.java |  74 ++++++
+.../browser/android/content/web_contents_factory.cc |  77 ++++++
+chrome/browser/browsing_data/BUILD.gn               |   5 +-
+...ng_data/chrome_browsing_data_remover_delegate.cc |   9 +
+...ing_data/chrome_browsing_data_remover_delegate.h |   5 +
+chrome/browser/flags/android/chrome_feature_list.cc |   2 +
+chrome/browser/flags/android/chrome_feature_list.h  |   1 +
+...mium/chrome/browser/flags/ChromeFeatureList.java |   1 +
+chrome/browser/prefs/browser_prefs.cc               |   2 +
+chrome/browser/tab/BUILD.gn                         |  14 +
+...hromium/chrome/browser/tab/WebContentsState.java |  24 +-
+chrome/browser/tab/tab_group_container_partition.cc | 208 ++++++++++++++++++
+chrome/browser/tab/tab_group_container_partition.h  |  36 +++
+chrome/browser/tab/web_contents_state.cc            |  35 ++-
+chrome/browser/tab/web_contents_state.h             |  11 +-
+...omium/chrome/browser/tabmodel/TabModelUtils.java |  12 +
+chrome/common/pref_names.h                          |   5 +
+...wser/browsing_data/browsing_data_remover_impl.cc |  59 ++++-
+...owser/browsing_data/browsing_data_remover_impl.h |   3 +
+content/browser/browsing_instance.cc                |   7 +
+content/browser/browsing_instance.h                 |   6 +-
+.../public/browser/browsing_data_remover_delegate.h |   6 +
+28 files changed, 889 insertions(+), 46 deletions(-)
+
+diff --git a/chrome/android/chrome_java_sources.gni b/chrome/android/chrome_java_sources.gni
+index ebbe12c463..cad1772453 100644
+--- a/chrome/android/chrome_java_sources.gni
++++ b/chrome/android/chrome_java_sources.gni
+@@ -1198,6 +1198,7 @@
+   "java/src/org/chromium/chrome/browser/tab/TabContextMenuPopulatorFactory.java",
+   "java/src/org/chromium/chrome/browser/tab/TabFavicon.java",
+   "java/src/org/chromium/chrome/browser/tab/TabGestureStateListener.java",
++  "java/src/org/chromium/chrome/browser/tab/TabGroupContainerMigrator.java",
+   "java/src/org/chromium/chrome/browser/tab/TabHelpers.java",
+   "java/src/org/chromium/chrome/browser/tab/TabImpl.java",
+   "java/src/org/chromium/chrome/browser/tab/TabParentIntent.java",
+diff --git a/chrome/android/java/src/org/chromium/chrome/browser/tab/TabGroupContainerMigrator.java b/chrome/android/java/src/org/chromium/chrome/browser/tab/TabGroupContainerMigrator.java
+new file mode 100644
+index 0000000000..640fe109ab
+--- /dev/null
++++ b/chrome/android/java/src/org/chromium/chrome/browser/tab/TabGroupContainerMigrator.java
+@@ -0,0 +1,247 @@
++// Copyright 2026 The Vanadium Authors. All rights reserved.
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++package org.chromium.chrome.browser.tab;
++
++import org.chromium.base.Log;
++import org.chromium.base.Token;
++import org.chromium.base.task.PostTask;
++import org.chromium.base.task.TaskTraits;
++import org.chromium.build.annotations.NullMarked;
++import org.chromium.build.annotations.Nullable;
++import org.chromium.chrome.browser.content.WebContentsFactory;
++import org.chromium.chrome.browser.flags.ChromeFeatureList;
++import org.chromium.chrome.browser.profiles.Profile;
++import org.chromium.chrome.browser.tab_group_sync.TabGroupSyncServiceFactory;
++import org.chromium.chrome.browser.tabmodel.ChromeTabCreator;
++import org.chromium.chrome.browser.tabmodel.TabClosureParams;
++import org.chromium.chrome.browser.tabmodel.TabGroupObserver;
++import org.chromium.chrome.browser.tabmodel.TabModel;
++import org.chromium.chrome.browser.tabmodel.TabModelObserver;
++import org.chromium.chrome.browser.ui.native_page.NativePage;
++import org.chromium.components.tab_group_sync.SavedTabGroup;
++import org.chromium.components.tab_group_sync.TabGroupSyncService;
++import org.chromium.content_public.browser.WebContents;
++import org.chromium.url.GURL;
++
++import java.util.Map;
++import java.util.WeakHashMap;
++
++/**
++ * Keeps a tab's StoragePartition consistent with its tab group membership. A live tab whose
++ * partition no longer matches its group is replaced by a frozen twin created from its serialized
++ * state, whose activation restores into the correct partition through the standard restore path.
++ * Deleting a group for real wipes its partition, while hidden saved groups keep their storage so
++ * reopening restores the same identity.
++ */
++@NullMarked
++public class TabGroupContainerMigrator implements TabGroupObserver {
++
++    // Catches grouped tabs arriving through paths that fire no group event, like a
++    // recent-tabs reopen restoring into the default partition.
++    private final TabModelObserver mAddObserver =
++            new TabModelObserver() {
++                @Override
++                public void didAddTab(
++                        Tab tab,
++                        @TabLaunchType int type,
++                        @TabCreationState int creationState,
++                        boolean markedForSelection) {
++                    if (tab.getTabGroupId() != null) migrate(tab);
++                }
++
++                @Override
++                public void restoreCompleted() {
++                    registerExistingContainers();
++                }
++
++                @Override
++                public void onDestroy() {
++                    stopObservingSyncInitialization();
++                }
++            };
++    private static final String TAG = "TabGroupContainer";
++
++    // The value must not reference the key or WeakHashMap can never collect the entry.
++    private static final Map<TabModel, Boolean> sAttached = new WeakHashMap<>();
++
++    private final Map<Tab, Boolean> mWatchedNativePageTabs = new WeakHashMap<>();
++
++    private final Profile mProfile;
++    private final TabModel mTabModel;
++    private final ChromeTabCreator mTabCreator;
++    private final @Nullable TabGroupSyncService mSyncService;
++    private boolean mObservingSyncInitialization;
++    private final TabGroupSyncService.Observer mSyncInitObserver =
++            new TabGroupSyncService.Observer() {
++                @Override
++                public void onInitialized() {
++                    registerExistingContainers();
++                    stopObservingSyncInitialization();
++                }
++            };
++
++    private TabGroupContainerMigrator(
++            Profile profile, TabModel tabModel, ChromeTabCreator tabCreator) {
++        mProfile = profile;
++        mTabModel = tabModel;
++        mTabCreator = tabCreator;
++        mSyncService = TabGroupSyncServiceFactory.getForProfile(profile);
++        if (mSyncService != null) {
++            mObservingSyncInitialization = true;
++            mSyncService.addObserver(mSyncInitObserver);
++        }
++    }
++
++    /** Attaches a migrator to the given model once. Incognito already isolates and is skipped. */
++    public static void attach(TabModel tabModel, ChromeTabCreator tabCreator) {
++        Profile profile = tabModel.getProfile();
++        if (profile == null || profile.isOffTheRecord()) return;
++        WebContentsFactory.retryPendingTabGroupContainerWipes(profile);
++        if (!ChromeFeatureList.isEnabled(ChromeFeatureList.PALLADIUM_TAB_GROUP_CONTAINERS)) {
++            return;
++        }
++        if (sAttached.containsKey(tabModel)) return;
++        TabGroupContainerMigrator migrator =
++                new TabGroupContainerMigrator(profile, tabModel, tabCreator);
++        sAttached.put(tabModel, Boolean.TRUE);
++        tabModel.addTabGroupObserver(migrator);
++        tabModel.addObserver(migrator.mAddObserver);
++        migrator.registerExistingContainers();
++    }
++
++    private @Nullable Token containerTokenFor(Tab tab) {
++        if (tab.isIncognitoBranded()) return null;
++        return tab.getTabGroupId();
++    }
++
++    // Posted so the group mutation this reacts to has fully finished before the model changes
++    // again. Replacing the tab rather than rebuilding its WebContents in place keeps every
++    // upstream assumption about a live tab's WebContents lifetime intact.
++    private void migrate(@Nullable Tab tab) {
++        if (tab == null) return;
++        Token groupToken = containerTokenFor(tab);
++        if (groupToken != null) {
++            WebContentsFactory.registerTabGroupContainer(mProfile, groupToken);
++        }
++        PostTask.postTask(TaskTraits.UI_DEFAULT, () -> replaceTabIfWrongPartition(tab));
++    }
++
++    private void registerExistingContainers() {
++        for (Tab tab : mTabModel) {
++            Token groupToken = containerTokenFor(tab);
++            if (groupToken != null) {
++                WebContentsFactory.registerTabGroupContainer(mProfile, groupToken);
++            }
++        }
++
++        if (mSyncService == null) return;
++        for (String syncId : mSyncService.getAllGroupIds()) {
++            SavedTabGroup savedGroup = mSyncService.getGroup(syncId);
++            if (savedGroup != null && savedGroup.localId != null) {
++                WebContentsFactory.registerTabGroupContainer(
++                        mProfile, savedGroup.localId.tabGroupId);
++            }
++        }
++    }
++
++    private void stopObservingSyncInitialization() {
++        if (!mObservingSyncInitialization || mSyncService == null) return;
++        mObservingSyncInitialization = false;
++        mSyncService.removeObserver(mSyncInitObserver);
++    }
++
++    private void replaceTabIfWrongPartition(Tab tab) {
++        if (tab.isDestroyed() || tab.isIncognitoBranded()) return;
++        // Native pages hold no site storage and never keep the fixed partition.
++        if (tab.isNativePage()
++                || NativePage.isNativePageUrl(tab.getUrl(), tab.isIncognitoBranded(), false)) {
++            migrateAfterLeavingNativePage(tab);
++            return;
++        }
++        WebContents webContents = tab.getWebContents();
++        // A frozen tab restores into the correct partition on its own.
++        if (webContents == null) return;
++        if (WebContentsFactory.webContentsMatchesContainer(webContents, containerTokenFor(tab))) {
++            return;
++        }
++        TabState state = TabStateExtractor.from(tab);
++        if (state == null || state.contentsState == null) {
++            // The tab keeps the wrong partition, which is the exact failure this
++            // feature exists to prevent, so it must at least be visible.
++            Log.w(TAG, "Tab %d not migrated, state extraction failed", tab.getId());
++            assert false : "Tab state extraction failed during container migration";
++            return;
++        }
++        state.tabGroupId = tab.getTabGroupId();
++        boolean wasActive = mTabModel.getTabAt(mTabModel.index()) == tab;
++        int index = mTabModel.indexOf(tab);
++        Tab replacement = mTabCreator.createFrozenTab(state, Tab.INVALID_TAB_ID, index + 1);
++        if (replacement == null) return;
++        mTabModel
++                .getTabRemover()
++                .forceCloseTabs(TabClosureParams.closeTab(tab).allowUndo(false).build());
++        if (wasActive) {
++            mTabModel.setIndex(mTabModel.indexOf(replacement), TabSelectionType.FROM_USER);
++        }
++    }
++
++    private void migrateAfterLeavingNativePage(Tab tab) {
++        if (Boolean.TRUE.equals(mWatchedNativePageTabs.get(tab))) return;
++        mWatchedNativePageTabs.put(tab, Boolean.TRUE);
++        tab.addObserver(
++                new EmptyTabObserver() {
++                    @Override
++                    public void onPageLoadFinished(Tab watched, GURL url) {
++                        if (NativePage.isNativePageUrl(
++                                url, watched.isIncognitoBranded(), false)) {
++                            return;
++                        }
++                        watched.removeObserver(this);
++                        mWatchedNativePageTabs.remove(watched);
++                        if (watched.getTabGroupId() != null) migrate(watched);
++                    }
++
++                    @Override
++                    public void onDestroyed(Tab watched) {
++                        watched.removeObserver(this);
++                        mWatchedNativePageTabs.remove(watched);
++                    }
++                });
++    }
++
++    @Override
++    public void didCreateNewGroup(Tab destinationTab, TabModel tabModel) {
++        migrate(destinationTab);
++    }
++
++    @Override
++    public void didMergeTabToGroup(Tab movedTab, boolean isDestinationTab) {
++        migrate(movedTab);
++    }
++
++    @Override
++    public void didMoveTabOutOfGroup(Tab movedTab, int prevFilterIndex) {
++        migrate(movedTab);
++    }
++
++    @Override
++    public void didRemoveTabGroup(
++            int oldRootId,
++            @Nullable Token oldTabGroupId,
++            @TabGroupObserver.DidRemoveTabGroupReason int reason) {
++        // CLOSE waits for committedTabGroupClosure so an undone closure keeps its storage.
++        if (oldTabGroupId == null || reason == TabGroupObserver.DidRemoveTabGroupReason.CLOSE) {
++            return;
++        }
++        WebContentsFactory.wipeTabGroupContainer(mProfile, oldTabGroupId);
++    }
++
++    @Override
++    public void committedTabGroupClosure(Token tabGroupId, boolean wasHiding) {
++        // A hiding closure is a saved group that can reopen, so its identity stays.
++        if (wasHiding) return;
++        WebContentsFactory.wipeTabGroupContainer(mProfile, tabGroupId);
++    }
++}
+diff --git a/chrome/android/java/src/org/chromium/chrome/browser/tab/TabImpl.java b/chrome/android/java/src/org/chromium/chrome/browser/tab/TabImpl.java
+index 994e1880eb..9c6b6b7aca 100644
+--- a/chrome/android/java/src/org/chromium/chrome/browser/tab/TabImpl.java
++++ b/chrome/android/java/src/org/chromium/chrome/browser/tab/TabImpl.java
+@@ -1017,7 +1017,7 @@
+         if (mPendingLoadParams != null) {
+             if (mWebContents == null) {
+                 WebContents webContents =
+-                        WebContentsFactory.createWebContents(mProfile, isHidden(), false);
++                        createWebContentsMaybeInContainer(isHidden(), false);
+                 initWebContents(webContents);
+             }
+             loadUrl(mPendingLoadParams);
+@@ -1552,12 +1552,10 @@
+                 assert webContents == null;
+ 
+                 webContents =
+-                        WebContentsFactory.createWebContents(
+-                                mProfile, isHidden(), initializeRenderer);
++                        createWebContentsMaybeInContainer(isHidden(), initializeRenderer);
+             } else if (createWebContents) {
+                 webContents =
+-                        WebContentsFactory.createWebContents(
+-                                mProfile, initiallyHidden, initializeRenderer);
++                        createWebContentsMaybeInContainer(initiallyHidden, initializeRenderer);
+             }
+             assert webContents != null;
+         } else if (mWebContentsState == null
+@@ -1568,8 +1566,7 @@
+             // also correct to not create a WebContents if one was provided to this method.
+ 
+             webContents =
+-                    WebContentsFactory.createWebContents(
+-                            mProfile, initiallyHidden, initializeRenderer);
++                    createWebContentsMaybeInContainer(initiallyHidden, initializeRenderer);
+         }
+ 
+         // Initialization logic that requires a WebContents to have been created.
+@@ -2543,6 +2540,26 @@
+         }
+     }
+ 
++    private @Nullable Token getContainerGroupToken() {
++        if (isIncognito()) return null;
++        if (!ChromeFeatureList.isEnabled(ChromeFeatureList.PALLADIUM_TAB_GROUP_CONTAINERS)) {
++            return null;
++        }
++        return getTabGroupId();
++    }
++
++    // Every WebContents this tab creates for itself must come through here, so a grouped tab
++    // always lands in its group's container partition.
++    private WebContents createWebContentsMaybeInContainer(
++            boolean initiallyHidden, boolean initializeRenderer) {
++        Token groupToken = getContainerGroupToken();
++        if (groupToken != null) {
++            return WebContentsFactory.createWebContentsForTabGroupContainer(
++                    mProfile, groupToken, initiallyHidden, initializeRenderer);
++        }
++        return WebContentsFactory.createWebContents(mProfile, initiallyHidden, initializeRenderer);
++    }
++
+     /**
+      * Restores the WebContents from its saved state. This should only be called if the tab is
+      * frozen with a saved TabState, and NOT if it was frozen for a lazy load.
+@@ -2557,7 +2574,8 @@
+             assert mWebContentsState != null;
+ 
+             WebContents webContents =
+-                    mWebContentsState.restoreWebContents(getProfile(), isHidden(), noRenderer);
++                    mWebContentsState.restoreWebContents(
++                            getProfile(), isHidden(), noRenderer, getContainerGroupToken());
+ 
+             UrlConstantResolver urlConstantResolver =
+                     UrlConstantResolverFactory.getForProfile(mProfile);
+@@ -2565,7 +2583,7 @@
+             if (webContents == null) {
+                 // State restore failed, just create a new empty web contents as that is the best
+                 // that can be done at this point.
+-                webContents = WebContentsFactory.createWebContents(mProfile, isHidden(), false);
++                webContents = createWebContentsMaybeInContainer(isHidden(), false);
+                 for (TabObserver observer : mObservers) observer.onRestoreFailed(this);
+                 restored = false;
+ 
+diff --git a/chrome/android/java/src/org/chromium/chrome/browser/tabmodel/ChromeTabCreator.java b/chrome/android/java/src/org/chromium/chrome/browser/tabmodel/ChromeTabCreator.java
+index 7886731a1e..37af20d2cf 100644
+--- a/chrome/android/java/src/org/chromium/chrome/browser/tabmodel/ChromeTabCreator.java
++++ b/chrome/android/java/src/org/chromium/chrome/browser/tabmodel/ChromeTabCreator.java
+@@ -13,6 +13,7 @@
+ 
+ import org.chromium.base.IntentUtils;
+ import org.chromium.base.SysUtils;
++import org.chromium.base.Token;
+ import org.chromium.base.TraceEvent;
+ import org.chromium.base.metrics.TimingMetric;
+ import org.chromium.base.supplier.OneshotSupplier;
+@@ -24,6 +25,7 @@
+ import org.chromium.chrome.browser.app.tab_activity_glue.ReparentingDelegateFactory;
+ import org.chromium.chrome.browser.app.tab_activity_glue.ReparentingTask;
+ import org.chromium.chrome.browser.compositor.CompositorViewHolder;
++import org.chromium.chrome.browser.content.WebContentsFactory;
+ import org.chromium.chrome.browser.flags.ChromeFeatureList;
+ import org.chromium.chrome.browser.incognito.IncognitoUtils;
+ import org.chromium.chrome.browser.prefetch.settings.PreloadPagesSettingsBridge;
+@@ -35,6 +37,7 @@
+ import org.chromium.chrome.browser.tab.TabAssociatedApp;
+ import org.chromium.chrome.browser.tab.TabBuilder;
+ import org.chromium.chrome.browser.tab.TabCreationState;
++import org.chromium.chrome.browser.tab.TabGroupContainerMigrator;
+ import org.chromium.chrome.browser.tab.TabDelegateFactory;
+ import org.chromium.chrome.browser.tab.TabId;
+ import org.chromium.chrome.browser.tab.TabLaunchType;
+@@ -183,6 +186,18 @@
+         TabCreatorUtil.launchNtp(this, getProfile(), type);
+     }
+ 
++    private @Nullable Token containerGroupTokenFor(
++            @Nullable Tab parent, @TabLaunchType int type) {
++        if (mIncognito || parent == null) return null;
++        if (!ChromeFeatureList.isEnabled(ChromeFeatureList.PALLADIUM_TAB_GROUP_CONTAINERS)) {
++            return null;
++        }
++        if (!TabModelUtils.shouldGroupWithParent(mTabModel.isTabModelRestored(), type, parent)) {
++            return null;
++        }
++        return parent.getTabGroupId();
++    }
++
+     private Profile getProfile() {
+         return ProfileProvider.getOrCreateProfile(
+                 assertNonNull(mProfileProviderSupplier.get()), mIncognito);
+@@ -417,8 +432,9 @@
+                 // TODO(http://crbug.com/375621886): Multi-network CCT might not be restoring tabs
+                 // from disk correctly since we're passing targetsNetwork = false. Investigate and
+                 // consider what should be done about this.
+-            } else if (WarmupManager.getInstance()
+-                    .hasSpareTab(getProfile(), /* targetsNetwork= */ false)) {
++            } else if (containerGroupTokenFor(parent, type) == null
++                    && WarmupManager.getInstance()
++                            .hasSpareTab(getProfile(), /* targetsNetwork= */ false)) {
+                 // Load URL using spare tab if available. This occurs only if a spare tab has been
+                 // created beforehand. The creation of a spare tab is a costly operation that should
+                 // not be performed without testing. Spare tab is only used for navigations in the
+@@ -447,14 +463,20 @@
+                 TraceEvent.end("ChromeTabCreator.loadUrlWithSpareTab");
+             } else {
+                 TraceEvent.begin("ChromeTabCreator.loadUrl");
+-                tab =
++                Token containerToken = containerGroupTokenFor(parent, type);
++                TabBuilder tabBuilder =
+                         TabBuilder.createLiveTab(getProfile(), !openInForeground)
+                                 .setParent(parent)
+                                 .setWindow(mNativeWindow)
+                                 .setLaunchType(type)
+                                 .setDelegateFactory(delegateFactory)
+-                                .setInitiallyHidden(!openInForeground)
+-                                .build();
++                                .setInitiallyHidden(!openInForeground);
++                if (containerToken != null) {
++                    tabBuilder.setWebContents(
++                            WebContentsFactory.createWebContentsForTabGroupContainer(
++                                    getProfile(), containerToken, !openInForeground, false));
++                }
++                tab = tabBuilder.build();
+                 if (copyHistory && parent != null) {
+                     // History must be copied immediately after tab is created.
+                     WebContents parentWebContents = parent.getWebContents();
+@@ -815,6 +837,7 @@
+     @Override
+     public void setTabModel(TabModel tabModel) {
+         mTabModel = tabModel;
++        TabGroupContainerMigrator.attach(tabModel, this);
+     }
+ 
+     @Override
+diff --git a/chrome/android/java/src/org/chromium/chrome/browser/tabmodel/TabCollectionTabModelImpl.java b/chrome/android/java/src/org/chromium/chrome/browser/tabmodel/TabCollectionTabModelImpl.java
+index 50cfdf7da2..e0cd1f3408 100644
+--- a/chrome/android/java/src/org/chromium/chrome/browser/tabmodel/TabCollectionTabModelImpl.java
++++ b/chrome/android/java/src/org/chromium/chrome/browser/tabmodel/TabCollectionTabModelImpl.java
+@@ -2054,19 +2054,8 @@
+     }
+ 
+     private boolean shouldGroupWithParent(Tab tab, @Nullable Tab parentTab) {
+-        if (parentTab == null) return false;
+-
+-        @TabLaunchType int tabLaunchType = tab.getLaunchType();
+-        boolean shouldGroupWithParentForTabListInterface =
+-                tabLaunchType == TabLaunchType.FROM_TAB_LIST_INTERFACE
+-                        && parentTab.getTabGroupId() != null;
+-
+-        return mModelDelegate.isTabModelRestored()
+-                && (tabLaunchType == TabLaunchType.FROM_TAB_GROUP_UI
+-                        || tabLaunchType == TabLaunchType.FROM_LONGPRESS_FOREGROUND_IN_GROUP
+-                        || tabLaunchType == TabLaunchType.FROM_LONGPRESS_BACKGROUND_IN_GROUP
+-                        || tabLaunchType == TabLaunchType.FROM_COLLABORATION_BACKGROUND_IN_GROUP
+-                        || shouldGroupWithParentForTabListInterface);
++        return TabModelUtils.shouldGroupWithParent(
++                mModelDelegate.isTabModelRestored(), tab.getLaunchType(), parentTab);
+     }
+ 
+     private void finalizeTabClosure(
+diff --git a/chrome/browser/android/BUILD.gn b/chrome/browser/android/BUILD.gn
+index da19cba43e..f729c31ed3 100644
+--- a/chrome/browser/android/BUILD.gn
++++ b/chrome/browser/android/BUILD.gn
+@@ -561,6 +561,7 @@
+       "//chrome/browser/sync/synced_set_up/android",
+       "//chrome/browser/sync/synced_set_up/android:jni_headers",
+       "//chrome/browser/tab",
++      "//chrome/browser/tab:container_partition",
+       "//chrome/browser/tab:impl",
+       "//chrome/browser/tab:jni_headers",
+       "//chrome/browser/tab/protocol",
+diff --git a/chrome/browser/android/content/java/src/org/chromium/chrome/browser/content/WebContentsFactory.java b/chrome/browser/android/content/java/src/org/chromium/chrome/browser/content/WebContentsFactory.java
+index 7b6dbad976..41f71ed653 100644
+--- a/chrome/browser/android/content/java/src/org/chromium/chrome/browser/content/WebContentsFactory.java
++++ b/chrome/browser/android/content/java/src/org/chromium/chrome/browser/content/WebContentsFactory.java
+@@ -8,6 +8,7 @@
+ import org.jni_zero.NativeMethods;
+ 
+ import org.chromium.base.ResettersForTesting;
++import org.chromium.base.Token;
+ import org.chromium.build.annotations.NullMarked;
+ import org.chromium.build.annotations.Nullable;
+ import org.chromium.chrome.browser.profiles.Profile;
+@@ -56,6 +57,31 @@
+     }
+ 
+     /**
++     * A factory method to build a {@link WebContents} object in the on-disk, per-group container
++     * StoragePartition keyed by the group token, walling its cookies and storage off from other
++     * groups and the default partition.
++     *
++     * @param profile The profile with which the {@link WebContents} should be built.
++     * @param groupToken The tab group's unique token identifying its container partition.
++     * @param initiallyHidden Whether or not the {@link WebContents} should be initially hidden.
++     * @param initializeRenderer Whether or not the {@link WebContents} should initialize renderer.
++     * @return A newly created {@link WebContents} object.
++     */
++    public static WebContents createWebContentsForTabGroupContainer(
++            Profile profile, Token groupToken, boolean initiallyHidden, boolean initializeRenderer) {
++        if (sWebContentsForTesting != null) {
++            return sWebContentsForTesting;
++        }
++        return WebContentsFactoryJni.get()
++                .createWebContentsForTabGroupContainer(
++                        profile,
++                        groupToken,
++                        initiallyHidden,
++                        initializeRenderer,
++                        new WebContentsCreationException());
++    }
++
++    /**
+      * A factory method to build a {@link WebContents} object.
+      *
+      * @param profile The profile with which the {@link WebContents} should be built.
+@@ -122,6 +148,37 @@
+                 profile, initiallyHidden, true, usesPlatformAutofill, targetNetwork);
+     }
+ 
++    /**
++     * Returns whether the given {@link WebContents} already lives in the container partition
++     * matching the given group token, or in the default partition when the token is null.
++     *
++     * @param webContents The {@link WebContents} to inspect.
++     * @param groupToken The expected tab group container, or null for the default partition.
++     */
++    public static boolean webContentsMatchesContainer(
++            WebContents webContents, @Nullable Token groupToken) {
++        return WebContentsFactoryJni.get().webContentsMatchesContainer(webContents, groupToken);
++    }
++
++    /**
++     * Erases all stored data of a tab group's container partition. Call when the group is
++     * deleted for real, not when it is merely hidden as a saved group.
++     *
++     * @param profile The profile owning the partition.
++     * @param groupToken The tab group whose container should be wiped.
++     */
++    public static void wipeTabGroupContainer(Profile profile, Token groupToken) {
++        WebContentsFactoryJni.get().wipeTabGroupContainer(profile, groupToken);
++    }
++
++    public static void registerTabGroupContainer(Profile profile, Token groupToken) {
++        WebContentsFactoryJni.get().registerTabGroupContainer(profile, groupToken);
++    }
++
++    public static void retryPendingTabGroupContainerWipes(Profile profile) {
++        WebContentsFactoryJni.get().retryPendingTabGroupContainerWipes(profile);
++    }
++
+     @NativeMethods
+     public interface Natives {
+         WebContents createWebContents(
+@@ -134,5 +191,22 @@
+ 
+         WebContents createWebContentsWithSeparateStoragePartitionForExperiment(
+                 @JniType("Profile*") Profile profile, Throwable javaCreator);
++
++        WebContents createWebContentsForTabGroupContainer(
++                @JniType("Profile*") Profile profile,
++                @JniType("base::Token") Token groupToken,
++                boolean initiallyHidden,
++                boolean initializeRenderer,
++                Throwable javaCreator);
++
++        boolean webContentsMatchesContainer(WebContents webContents, @Nullable Token groupToken);
++
++        void wipeTabGroupContainer(
++                @JniType("Profile*") Profile profile, @JniType("base::Token") Token groupToken);
++
++        void registerTabGroupContainer(
++                @JniType("Profile*") Profile profile, @JniType("base::Token") Token groupToken);
++
++        void retryPendingTabGroupContainerWipes(@JniType("Profile*") Profile profile);
+     }
+ }
+diff --git a/chrome/browser/android/content/web_contents_factory.cc b/chrome/browser/android/content/web_contents_factory.cc
+index ad2344b37a..f196d6bc35 100644
+--- a/chrome/browser/android/content/web_contents_factory.cc
++++ b/chrome/browser/android/content/web_contents_factory.cc
+@@ -3,9 +3,12 @@
+ // found in the LICENSE file.
+ 
+ #include "base/android/jni_android.h"
++#include "base/android/token_android.h"
++#include "base/token.h"
+ #include "chrome/browser/android/content/web_contents_factory_data_deleter.h"
+ #include "chrome/browser/browser_process.h"
+ #include "chrome/browser/profiles/profile.h"
++#include "chrome/browser/tab/tab_group_container_partition.h"
+ #include "content/public/browser/security_principal.h"
+ #include "content/public/browser/site_instance.h"
+ #include "content/public/browser/storage_partition_config.h"
+@@ -81,4 +84,78 @@
+   return web_contents.release()->GetJavaWebContents();
+ }
+ 
++static ScopedJavaLocalRef<jobject>
++JNI_WebContentsFactory_CreateWebContentsForTabGroupContainer(
++    JNIEnv* env,
++    Profile* profile,
++    base::Token group_token,
++    bool initially_hidden,
++    bool initialize_renderer,
++    const JavaRef<jthrowable>& j_creator_location) {
++  RegisterTabGroupContainerPartition(profile, group_token);
++  // The per-group identity rides in partition_name, which is the group's
++  // unique token, so a recreated group never reuses a prior container's
++  // partition. On disk so the identity survives restarts.
++  auto site_instance = content::SiteInstance::CreateForFixedStoragePartition(
++      profile, GURL(), TabGroupContainerPartitionConfig(profile, group_token));
++
++  content::WebContents::CreateParams params =
++      content::WebContents::CreateParams(profile, std::move(site_instance));
++  params.initially_hidden = initially_hidden;
++  params.desired_renderer_state =
++      initialize_renderer
++          ? content::WebContents::CreateParams::
++                kInitializeAndWarmupRendererProcess
++          : content::WebContents::CreateParams::kOkayToHaveRendererProcess;
++  params.java_creator_location = j_creator_location;
++
++  // Ownership is passed into java, and then to TabAndroid::InitWebContents.
++  // No per-WebContents data deleter here. The partition is shared by every
++  // tab in the group and outlives any one of them. Cleanup happens at group
++  // deletion.
++  return content::WebContents::Create(params).release()->GetJavaWebContents();
++}
++
++static jboolean JNI_WebContentsFactory_WebContentsMatchesContainer(
++    JNIEnv* env,
++    const JavaRef<jobject>& j_web_contents,
++    const JavaRef<jobject>& j_group_token) {
++  content::WebContents* web_contents =
++      content::WebContents::FromJavaWebContents(j_web_contents);
++  if (!web_contents) {
++    return true;
++  }
++  auto actual = web_contents->GetSiteInstance()
++                    ->GetSecurityPrincipal()
++                    .GetStoragePartitionConfig();
++  content::BrowserContext* browser_context = web_contents->GetBrowserContext();
++  auto expected =
++      j_group_token
++          ? TabGroupContainerPartitionConfig(
++                browser_context, base::android::TokenAndroid::FromJavaToken(
++                                     env, j_group_token))
++          : content::StoragePartitionConfig::CreateDefault(browser_context);
++  return actual == expected;
++}
++
++static void JNI_WebContentsFactory_WipeTabGroupContainer(
++    JNIEnv* env,
++    Profile* profile,
++    base::Token group_token) {
++  WipeTabGroupContainerPartition(profile, group_token);
++}
++
++static void JNI_WebContentsFactory_RegisterTabGroupContainer(
++    JNIEnv* env,
++    Profile* profile,
++    base::Token group_token) {
++  RegisterTabGroupContainerPartition(profile, group_token);
++}
++
++static void JNI_WebContentsFactory_RetryPendingTabGroupContainerWipes(
++    JNIEnv* env,
++    Profile* profile) {
++  RetryPendingTabGroupContainerWipes(profile);
++}
++
+ DEFINE_JNI(WebContentsFactory)
+diff --git a/chrome/browser/browsing_data/BUILD.gn b/chrome/browser/browsing_data/BUILD.gn
+index 9d3431f161..f08e62985a 100644
+--- a/chrome/browser/browsing_data/BUILD.gn
++++ b/chrome/browser/browsing_data/BUILD.gn
+@@ -231,7 +231,10 @@
+   }
+ 
+   if (is_android) {
+-    deps += [ "//chrome/browser/offline_pages" ]
++    deps += [
++      "//chrome/browser/offline_pages",
++      "//chrome/browser/tab:container_partition",
++    ]
+   }
+ }
+ 
+diff --git a/chrome/browser/browsing_data/chrome_browsing_data_remover_delegate.cc b/chrome/browser/browsing_data/chrome_browsing_data_remover_delegate.cc
+index 43697fcb28..1dd2ece187 100644
+--- a/chrome/browser/browsing_data/chrome_browsing_data_remover_delegate.cc
++++ b/chrome/browser/browsing_data/chrome_browsing_data_remover_delegate.cc
+@@ -179,6 +179,7 @@
+ #include "chrome/browser/settings/jni_headers/RecentSearchQueue_jni.h"
+ #include "chrome/browser/share/share_history.h"
+ #include "chrome/browser/share/share_ranking.h"
++#include "chrome/browser/tab/tab_group_container_partition.h"
+ #include "chrome/browser/ui/android/tab_model/tab_model.h"
+ #include "chrome/browser/ui/android/tab_model/tab_model_list.h"
+ #include "components/cdm/browser/media_drm_storage_impl.h"  // nogncheck crbug.com/40147906
+@@ -313,6 +314,14 @@
+   return profile_->GetPrefs()->GetBoolean(prefs::kAllowDeletingBrowserHistory);
+ }
+ 
++#if BUILDFLAG(IS_ANDROID)
++std::vector<content::StoragePartitionConfig>
++ChromeBrowsingDataRemoverDelegate::
++    GetAdditionalStoragePartitionConfigsForRemoval() {
++  return GetRegisteredTabGroupContainerPartitions(profile_);
++}
++#endif
++
+ void ChromeBrowsingDataRemoverDelegate::RemoveEmbedderData(
+     const base::Time& delete_begin,
+     const base::Time& delete_end,
+diff --git a/chrome/browser/browsing_data/chrome_browsing_data_remover_delegate.h b/chrome/browser/browsing_data/chrome_browsing_data_remover_delegate.h
+index 8024fdfff0..06050512c0 100644
+--- a/chrome/browser/browsing_data/chrome_browsing_data_remover_delegate.h
++++ b/chrome/browser/browsing_data/chrome_browsing_data_remover_delegate.h
+@@ -6,6 +6,7 @@
+ #define CHROME_BROWSER_BROWSING_DATA_CHROME_BROWSING_DATA_REMOVER_DELEGATE_H_
+ 
+ #include <memory>
++#include <vector>
+ 
+ #include "base/cancelable_callback.h"
+ #include "base/functional/callback_forward.h"
+@@ -68,6 +69,10 @@
+   content::BrowsingDataRemoverDelegate::EmbedderOriginTypeMatcher
+   GetOriginTypeMatcher() override;
+   bool MayRemoveDownloadHistory() override;
++#if BUILDFLAG(IS_ANDROID)
++  std::vector<content::StoragePartitionConfig>
++  GetAdditionalStoragePartitionConfigsForRemoval() override;
++#endif
+   void RemoveEmbedderData(
+       const base::Time& delete_begin,
+       const base::Time& delete_end,
+diff --git a/chrome/browser/flags/android/chrome_feature_list.cc b/chrome/browser/flags/android/chrome_feature_list.cc
+index 9fafa60e1c..3d465ea475 100644
+--- a/chrome/browser/flags/android/chrome_feature_list.cc
++++ b/chrome/browser/flags/android/chrome_feature_list.cc
+@@ -417,6 +417,7 @@
+     &kPCCTMinimumHeight,
+     &kPageAnnotationsService,
+     &kPageContentProvider,
++    &kPalladiumTabGroupContainers,
+     &kPartnerCustomizationsUma,
+     &kPdfReuseFragment,
+     &kPersistAcrossReboots,
+@@ -803,6 +804,7 @@
+ BASE_FEATURE(kPCCTMinimumHeight, base::FEATURE_ENABLED_BY_DEFAULT);
+ BASE_FEATURE(kPageAnnotationsService, base::FEATURE_DISABLED_BY_DEFAULT);
+ BASE_FEATURE(kPageContentProvider, base::FEATURE_ENABLED_BY_DEFAULT);
++BASE_FEATURE(kPalladiumTabGroupContainers, base::FEATURE_ENABLED_BY_DEFAULT);
+ BASE_FEATURE(kPartnerCustomizationsUma, base::FEATURE_DISABLED_BY_DEFAULT);
+ BASE_FEATURE(kPdfReuseFragment, base::FEATURE_DISABLED_BY_DEFAULT);
+ BASE_FEATURE(kPersistAcrossReboots, base::FEATURE_ENABLED_BY_DEFAULT);
+diff --git a/chrome/browser/flags/android/chrome_feature_list.h b/chrome/browser/flags/android/chrome_feature_list.h
+index 6483b64cbc..eb5c6317cb 100644
+--- a/chrome/browser/flags/android/chrome_feature_list.h
++++ b/chrome/browser/flags/android/chrome_feature_list.h
+@@ -239,6 +239,7 @@
+ BASE_DECLARE_FEATURE(kPCCTMinimumHeight);
+ BASE_DECLARE_FEATURE(kPageAnnotationsService);
+ BASE_DECLARE_FEATURE(kPageContentProvider);
++BASE_DECLARE_FEATURE(kPalladiumTabGroupContainers);
+ BASE_DECLARE_FEATURE(kPartnerCustomizationsUma);
+ BASE_DECLARE_FEATURE(kPdfReuseFragment);
+ BASE_DECLARE_FEATURE(kPersistAcrossReboots);
+diff --git a/chrome/browser/flags/android/java/src/org/chromium/chrome/browser/flags/ChromeFeatureList.java b/chrome/browser/flags/android/java/src/org/chromium/chrome/browser/flags/ChromeFeatureList.java
+index 3d2da0a0ce..15b63c9a8e 100644
+--- a/chrome/browser/flags/android/java/src/org/chromium/chrome/browser/flags/ChromeFeatureList.java
++++ b/chrome/browser/flags/android/java/src/org/chromium/chrome/browser/flags/ChromeFeatureList.java
+@@ -557,6 +557,7 @@
+     public static final String PAGE_INFO_ABOUT_THIS_SITE_MORE_LANGS =
+             "PageInfoAboutThisSiteMoreLangs";
+     public static final String PAINT_PREVIEW_DEMO = "PaintPreviewDemo";
++    public static final String PALLADIUM_TAB_GROUP_CONTAINERS = "PalladiumTabGroupContainers";
+     public static final String PARTNER_CUSTOMIZATIONS_UMA = "PartnerCustomizationsUma";
+     public static final String PASSWORD_FORM_GROUPED_AFFILIATIONS =
+             "PasswordFormGroupedAffiliations";
+diff --git a/chrome/browser/prefs/browser_prefs.cc b/chrome/browser/prefs/browser_prefs.cc
+index 4a0d38b3a5..8cb5cdd6f5 100644
+--- a/chrome/browser/prefs/browser_prefs.cc
++++ b/chrome/browser/prefs/browser_prefs.cc
+@@ -1966,6 +1966,8 @@
+       registry);
+   readaloud::RegisterProfilePrefs(registry);
+   RecentTabsPagePrefs::RegisterProfilePrefs(registry);
++  registry->RegisterListPref(prefs::kTabGroupContainerPartitionTokens);
++  registry->RegisterListPref(prefs::kTabGroupContainerPendingWipeTokens);
+   usage_stats::UsageStatsBridge::RegisterProfilePrefs(registry);
+   variations::VariationsService::RegisterProfilePrefs(registry);
+   webapps::InstallPromptPrefs::RegisterProfilePrefs(registry);
+diff --git a/chrome/browser/tab/BUILD.gn b/chrome/browser/tab/BUILD.gn
+index 133bfa708f..0453c2db52 100644
+--- a/chrome/browser/tab/BUILD.gn
++++ b/chrome/browser/tab/BUILD.gn
+@@ -226,6 +226,19 @@
+   ]
+ }
+ 
++source_set("container_partition") {
++  public = [ "tab_group_container_partition.h" ]
++  sources = [ "tab_group_container_partition.cc" ]
++  deps = [
++    "//base",
++    "//chrome/browser/profiles:profile",
++    "//chrome/common:constants",
++    "//components/prefs",
++    "//content/public/browser",
++    "//third_party/blink/public/common",
++  ]
++}
++
+ source_set("tab") {
+   sources = [
+     "android_tab_package.h",
+@@ -297,6 +310,7 @@
+     "web_contents_state.cc",
+   ]
+   deps = [
++    ":container_partition",
+     ":jni_headers",
+     ":tab",
+     "//chrome/browser/flags:flags_android",
+diff --git a/chrome/browser/tab/java/src/org/chromium/chrome/browser/tab/WebContentsState.java b/chrome/browser/tab/java/src/org/chromium/chrome/browser/tab/WebContentsState.java
+index b4ad920ddf..79b067e576 100644
+--- a/chrome/browser/tab/java/src/org/chromium/chrome/browser/tab/WebContentsState.java
++++ b/chrome/browser/tab/java/src/org/chromium/chrome/browser/tab/WebContentsState.java
+@@ -10,6 +10,7 @@
+ import org.jni_zero.JniType;
+ import org.jni_zero.NativeMethods;
+ 
++import org.chromium.base.Token;
+ import org.chromium.base.lifetime.Destroyable;
+ import org.chromium.base.lifetime.LifetimeAssert;
+ import org.chromium.build.annotations.NullMarked;
+@@ -305,8 +306,26 @@
+      */
+     public @Nullable WebContents restoreWebContents(
+             Profile profile, boolean isHidden, boolean noRenderer) {
++        return restoreWebContents(profile, isHidden, noRenderer, /* groupToken= */ null);
++    }
++
++    /**
++     * Creates a {@link WebContents} from the buffer, optionally inside a tab group's container
++     * StoragePartition.
++     *
++     * @param profile The profile used for the tab.
++     * @param isHidden Whether or not the tab initially starts hidden.
++     * @param noRenderer Explicitly request to create without a renderer. If false a renderer may or
++     *     may not be created.
++     * @param groupToken When non-null, the tab group token whose container partition the restored
++     *     {@link WebContents} should live in.
++     * @return A {@link WebContents} object or null if something went wrong.
++     */
++    public @Nullable WebContents restoreWebContents(
++            Profile profile, boolean isHidden, boolean noRenderer, @Nullable Token groupToken) {
+         return WebContentsStateJni.get()
+-                .restoreContentsFromByteBuffer(profile, buffer(), version(), isHidden, noRenderer);
++                .restoreContentsFromByteBuffer(
++                        profile, buffer(), version(), isHidden, noRenderer, groupToken);
+     }
+ 
+     /**
+@@ -387,7 +406,8 @@
+                 ByteBuffer buffer,
+                 int savedStateVersion,
+                 boolean initiallyHidden,
+-                boolean noRenderer);
++                boolean noRenderer,
++                @Nullable Token groupToken);
+ 
+         @Nullable ByteBuffer getContentsStateAsByteBuffer(WebContents webcontents);
+ 
+diff --git a/chrome/browser/tab/tab_group_container_partition.cc b/chrome/browser/tab/tab_group_container_partition.cc
+new file mode 100644
+index 0000000000..80701c60aa
+--- /dev/null
++++ b/chrome/browser/tab/tab_group_container_partition.cc
+@@ -0,0 +1,208 @@
++// Copyright 2026 The Vanadium Authors. All rights reserved.
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#include "chrome/browser/tab/tab_group_container_partition.h"
++
++#include <memory>
++#include <optional>
++#include <string>
++#include <utility>
++
++#include "base/containers/flat_set.h"
++#include "base/functional/bind.h"
++#include "base/memory/weak_ptr.h"
++#include "base/strings/string_util.h"
++#include "base/supports_user_data.h"
++#include "base/time/time.h"
++#include "base/values.h"
++#include "chrome/browser/profiles/profile.h"
++#include "chrome/common/pref_names.h"
++#include "components/prefs/pref_service.h"
++#include "components/prefs/scoped_user_pref_update.h"
++#include "content/public/browser/storage_partition.h"
++#include "third_party/blink/public/common/storage_key/storage_key.h"
++
++namespace {
++
++constexpr char kPartitionDomain[] = "palladiumtabgroupcontainer";
++const int kWipeStateKey = 0;
++
++class WipeState : public base::SupportsUserData::Data {
++ public:
++  base::flat_set<std::string> in_flight_tokens;
++  base::flat_set<std::string> keep_registered_tokens;
++};
++
++std::string PartitionName(const base::Token& group_token) {
++  return base::ToLowerASCII(group_token.ToString());
++}
++
++std::optional<base::Token> ParseToken(const std::string& token_string) {
++  return base::Token::FromString(base::ToUpperASCII(token_string));
++}
++
++WipeState* GetWipeState(Profile* profile) {
++  auto* state = static_cast<WipeState*>(profile->GetUserData(&kWipeStateKey));
++  if (!state) {
++    auto new_state = std::make_unique<WipeState>();
++    state = new_state.get();
++    profile->SetUserData(&kWipeStateKey, std::move(new_state));
++  }
++  return state;
++}
++
++bool ListPrefContainsToken(Profile* profile,
++                           const char* pref_name,
++                           const base::Token& token) {
++  for (const base::Value& value : profile->GetPrefs()->GetList(pref_name)) {
++    const std::string* token_string = value.GetIfString();
++    if (token_string && ParseToken(*token_string) == token) {
++      return true;
++    }
++  }
++  return false;
++}
++
++bool AddTokenToListPref(Profile* profile,
++                        const char* pref_name,
++                        const base::Token& token) {
++  if (ListPrefContainsToken(profile, pref_name, token)) {
++    return false;
++  }
++  ScopedListPrefUpdate update(profile->GetPrefs(), pref_name);
++  update->Append(token.ToString());
++  return true;
++}
++
++void EraseTokenFromListPref(Profile* profile,
++                            const char* pref_name,
++                            const base::Token& token) {
++  ScopedListPrefUpdate update(profile->GetPrefs(), pref_name);
++  update->EraseIf([&token](const base::Value& value) {
++    const std::string* token_string = value.GetIfString();
++    return token_string && ParseToken(*token_string) == token;
++  });
++}
++
++void OnWipeFinished(base::WeakPtr<Profile> profile, base::Token group_token) {
++  if (!profile) {
++    return;
++  }
++
++  WipeState* state = GetWipeState(profile.get());
++  const std::string token_string = group_token.ToString();
++  state->in_flight_tokens.erase(token_string);
++  if (!state->keep_registered_tokens.erase(token_string)) {
++    EraseTokenFromListPref(
++        profile.get(), prefs::kTabGroupContainerPartitionTokens, group_token);
++  }
++  EraseTokenFromListPref(
++      profile.get(), prefs::kTabGroupContainerPendingWipeTokens, group_token);
++  profile->GetPrefs()->CommitPendingWrite();
++}
++
++void StartWipe(Profile* profile, const base::Token& group_token) {
++  if (profile->ShutdownStarted()) {
++    return;
++  }
++  WipeState* state = GetWipeState(profile);
++  if (!state->in_flight_tokens.insert(group_token.ToString()).second) {
++    return;
++  }
++
++  content::StoragePartition* partition = profile->GetStoragePartition(
++      TabGroupContainerPartitionConfig(profile, group_token));
++  partition->ClearData(
++      content::StoragePartition::REMOVE_DATA_MASK_ALL, blink::StorageKey(),
++      base::Time(), base::Time::Max(),
++      base::BindOnce(&OnWipeFinished, profile->GetWeakPtr(), group_token));
++}
++
++void OnWipeJournalCommitted(base::WeakPtr<Profile> profile,
++                            base::Token group_token) {
++  if (!profile || !ListPrefContainsToken(
++                      profile.get(), prefs::kTabGroupContainerPendingWipeTokens,
++                      group_token)) {
++    return;
++  }
++  StartWipe(profile.get(), group_token);
++}
++
++void AddTokensFromPref(Profile* profile,
++                       const char* pref_name,
++                       base::flat_set<std::string>* tokens) {
++  for (const base::Value& value : profile->GetPrefs()->GetList(pref_name)) {
++    const std::string* token_string = value.GetIfString();
++    if (!token_string) {
++      continue;
++    }
++    std::optional<base::Token> token = ParseToken(*token_string);
++    if (token) {
++      tokens->insert(token->ToString());
++    }
++  }
++}
++
++}  // namespace
++
++content::StoragePartitionConfig TabGroupContainerPartitionConfig(
++    content::BrowserContext* browser_context,
++    const base::Token& group_token) {
++  return content::StoragePartitionConfig::Create(
++      browser_context, kPartitionDomain, PartitionName(group_token), false);
++}
++
++void RegisterTabGroupContainerPartition(Profile* profile,
++                                        const base::Token& group_token) {
++  if (ListPrefContainsToken(profile, prefs::kTabGroupContainerPendingWipeTokens,
++                            group_token)) {
++    GetWipeState(profile)->keep_registered_tokens.insert(
++        group_token.ToString());
++  }
++  if (AddTokenToListPref(profile, prefs::kTabGroupContainerPartitionTokens,
++                         group_token)) {
++    profile->GetPrefs()->CommitPendingWrite();
++  }
++}
++
++std::vector<content::StoragePartitionConfig>
++GetRegisteredTabGroupContainerPartitions(Profile* profile) {
++  std::vector<content::StoragePartitionConfig> partitions;
++  base::flat_set<std::string> token_strings;
++  AddTokensFromPref(profile, prefs::kTabGroupContainerPartitionTokens,
++                    &token_strings);
++  AddTokensFromPref(profile, prefs::kTabGroupContainerPendingWipeTokens,
++                    &token_strings);
++  partitions.reserve(token_strings.size());
++  for (const std::string& token_string : token_strings) {
++    std::optional<base::Token> token = ParseToken(token_string);
++    if (token) {
++      partitions.push_back(TabGroupContainerPartitionConfig(profile, *token));
++    }
++  }
++  return partitions;
++}
++
++void WipeTabGroupContainerPartition(Profile* profile,
++                                    const base::Token& group_token) {
++  GetWipeState(profile)->keep_registered_tokens.erase(group_token.ToString());
++  AddTokenToListPref(profile, prefs::kTabGroupContainerPartitionTokens,
++                     group_token);
++  AddTokenToListPref(profile, prefs::kTabGroupContainerPendingWipeTokens,
++                     group_token);
++  profile->GetPrefs()->CommitPendingWrite(base::BindOnce(
++      &OnWipeJournalCommitted, profile->GetWeakPtr(), group_token));
++}
++
++void RetryPendingTabGroupContainerWipes(Profile* profile) {
++  base::flat_set<std::string> token_strings;
++  AddTokensFromPref(profile, prefs::kTabGroupContainerPendingWipeTokens,
++                    &token_strings);
++  for (const std::string& token_string : token_strings) {
++    std::optional<base::Token> token = ParseToken(token_string);
++    if (token) {
++      StartWipe(profile, *token);
++    }
++  }
++}
+diff --git a/chrome/browser/tab/tab_group_container_partition.h b/chrome/browser/tab/tab_group_container_partition.h
+new file mode 100644
+index 0000000000..7acf06552d
+--- /dev/null
++++ b/chrome/browser/tab/tab_group_container_partition.h
+@@ -0,0 +1,36 @@
++// Copyright 2026 The Vanadium Authors. All rights reserved.
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#ifndef CHROME_BROWSER_TAB_TAB_GROUP_CONTAINER_PARTITION_H_
++#define CHROME_BROWSER_TAB_TAB_GROUP_CONTAINER_PARTITION_H_
++
++#include <vector>
++
++#include "base/token.h"
++#include "content/public/browser/storage_partition_config.h"
++
++class Profile;
++
++namespace content {
++class BrowserContext;
++}
++
++// The one definition of a tab group's container partition. Every creator and
++// consumer must agree byte for byte or tabs silently land in different jars.
++content::StoragePartitionConfig TabGroupContainerPartitionConfig(
++    content::BrowserContext* browser_context,
++    const base::Token& group_token);
++
++void RegisterTabGroupContainerPartition(Profile* profile,
++                                        const base::Token& group_token);
++
++std::vector<content::StoragePartitionConfig>
++GetRegisteredTabGroupContainerPartitions(Profile* profile);
++
++void WipeTabGroupContainerPartition(Profile* profile,
++                                    const base::Token& group_token);
++
++void RetryPendingTabGroupContainerWipes(Profile* profile);
++
++#endif  // CHROME_BROWSER_TAB_TAB_GROUP_CONTAINER_PARTITION_H_
+diff --git a/chrome/browser/tab/web_contents_state.cc b/chrome/browser/tab/web_contents_state.cc
+index 9d99254e2d..1dc0449568 100644
+--- a/chrome/browser/tab/web_contents_state.cc
++++ b/chrome/browser/tab/web_contents_state.cc
+@@ -17,12 +17,14 @@
+ #include "base/android/jni_android.h"
+ #include "base/android/jni_bytebuffer.h"
+ #include "base/android/jni_string.h"
++#include "base/android/token_android.h"
+ #include "base/compiler_specific.h"
+ #include "base/containers/span.h"
+ #include "base/logging.h"
+ #include "base/metrics/histogram_functions.h"
+ #include "base/pickle.h"
+ #include "chrome/browser/profiles/profile.h"
++#include "chrome/browser/tab/tab_group_container_partition.h"
+ #include "chrome/common/webui_url_constants.h"
+ #include "components/sessions/content/content_serialized_navigation_builder.h"
+ #include "components/sessions/core/serialized_navigation_entry.h"
+@@ -31,6 +33,8 @@
+ #include "content/public/browser/navigation_controller.h"
+ #include "content/public/browser/navigation_entry.h"
+ #include "content/public/browser/restore_type.h"
++#include "content/public/browser/site_instance.h"
++#include "content/public/browser/storage_partition_config.h"
+ #include "content/public/browser/web_contents.h"
+ #include "content/public/common/referrer.h"
+ #include "services/network/public/cpp/shared_url_loader_factory.h"
+@@ -261,14 +265,20 @@
+     BrowserContext* browser_context,
+     int saved_state_version,
+     bool initially_hidden,
+-    bool no_renderer) {
++    bool no_renderer,
++    const base::android::JavaRef<jobject>& j_group_token) {
+   base::span<const uint8_t> span =
+       base::android::JavaByteBufferToSpan(env, state);
+ 
++  std::optional<base::Token> group_token;
++  if (j_group_token) {
++    group_token = base::android::TokenAndroid::FromJavaToken(env, j_group_token);
++  }
++
+   WebContents* web_contents =
+       WebContentsState::RestoreContentsFromByteBufferImpl(
+           browser_context, span, saved_state_version, initially_hidden,
+-          no_renderer)
++          no_renderer, group_token)
+           .release();
+ 
+   if (web_contents) {
+@@ -285,7 +295,7 @@
+     bool no_renderer) {
+   return WebContentsState::RestoreContentsFromByteBufferImpl(
+       browser_context, byte_buffer->GetBuffer(), byte_buffer->state_version(),
+-      initially_hidden, no_renderer);
++      initially_hidden, no_renderer, std::nullopt);
+ }
+ 
+ std::unique_ptr<WebContents>
+@@ -294,7 +304,8 @@
+     base::span<const uint8_t> buffer,
+     int saved_state_version,
+     bool initially_hidden,
+-    bool no_renderer) {
++    bool no_renderer,
++    const std::optional<base::Token>& group_token) {
+   bool is_off_the_record = browser_context->IsOffTheRecord();
+   int current_entry_index;
+   std::vector<sessions::SerializedNavigationEntry> navigations;
+@@ -309,7 +320,15 @@
+       sessions::ContentSerializedNavigationBuilder::ToNavigationEntries(
+           navigations, browser_context);
+ 
+-  WebContents::CreateParams params(browser_context);
++  scoped_refptr<content::SiteInstance> site_instance;
++  if (group_token) {
++    RegisterTabGroupContainerPartition(
++        Profile::FromBrowserContext(browser_context), *group_token);
++    site_instance = content::SiteInstance::CreateForFixedStoragePartition(
++        browser_context, GURL(),
++        TabGroupContainerPartitionConfig(browser_context, *group_token));
++  }
++  WebContents::CreateParams params(browser_context, std::move(site_instance));
+ 
+   params.initially_hidden = initially_hidden;
+   if (no_renderer) {
+@@ -525,9 +544,11 @@
+     const JavaRef<jobject>& state,
+     int saved_state_version,
+     bool initially_hidden,
+-    bool no_renderer) {
++    bool no_renderer,
++    const JavaRef<jobject>& j_group_token) {
+   return WebContentsState::RestoreContentsFromByteBuffer(
+-      env, state, profile, saved_state_version, initially_hidden, no_renderer);
++      env, state, profile, saved_state_version, initially_hidden, no_renderer,
++      j_group_token);
+ }
+ 
+ static ScopedJavaLocalRef<jobject>
+diff --git a/chrome/browser/tab/web_contents_state.h b/chrome/browser/tab/web_contents_state.h
+index 32f8ac212f..f0a0afbbae 100644
+--- a/chrome/browser/tab/web_contents_state.h
++++ b/chrome/browser/tab/web_contents_state.h
+@@ -5,10 +5,13 @@
+ #ifndef CHROME_BROWSER_TAB_WEB_CONTENTS_STATE_H_
+ #define CHROME_BROWSER_TAB_WEB_CONTENTS_STATE_H_
+ 
++#include <optional>
++
+ #include "base/android/scoped_java_ref.h"
+ #include "base/containers/span.h"
+ #include "base/functional/callback.h"
+ #include "base/memory/raw_span.h"
++#include "base/token.h"
+ #include "content/public/browser/web_contents.h"
+ 
+ namespace sessions {
+@@ -82,13 +85,16 @@
+ 
+ 
+   // Restores a WebContents from the passed in state using JNI parameters.
++  // A non-null `j_group_token` restores into that tab group's container
++  // StoragePartition instead of the default partition.
+   static base::android::ScopedJavaLocalRef<jobject>
+   RestoreContentsFromByteBuffer(JNIEnv* env,
+                                 const base::android::JavaRef<jobject>& state,
+                                 content::BrowserContext* browser_context,
+                                 int saved_state_version,
+                                 bool initially_hidden,
+-                                bool no_renderer);
++                                bool no_renderer,
++                                const base::android::JavaRef<jobject>& j_group_token);
+ 
+   // Restores a WebContents from the passed in state using native parameters.
+   static std::unique_ptr<content::WebContents> RestoreContentsFromByteBuffer(
+@@ -154,7 +160,8 @@
+                                     base::span<const uint8_t> buffer,
+                                     int saved_state_version,
+                                     bool initially_hidden,
+-                                    bool no_renderer);
++                                    bool no_renderer,
++                                    const std::optional<base::Token>& group_token);
+ };
+ 
+ #endif  // CHROME_BROWSER_TAB_WEB_CONTENTS_STATE_H_
+diff --git a/chrome/browser/tabmodel/android/java/src/org/chromium/chrome/browser/tabmodel/TabModelUtils.java b/chrome/browser/tabmodel/android/java/src/org/chromium/chrome/browser/tabmodel/TabModelUtils.java
+index 98fb9a52b9..3e16684ec3 100644
+--- a/chrome/browser/tabmodel/android/java/src/org/chromium/chrome/browser/tabmodel/TabModelUtils.java
++++ b/chrome/browser/tabmodel/android/java/src/org/chromium/chrome/browser/tabmodel/TabModelUtils.java
+@@ -13,6 +13,7 @@
+ import org.chromium.build.annotations.NullMarked;
+ import org.chromium.build.annotations.Nullable;
+ import org.chromium.chrome.browser.tab.Tab;
++import org.chromium.chrome.browser.tab.TabLaunchType;
+ import org.chromium.chrome.browser.tab.TabSelectionType;
+ import org.chromium.content_public.browser.WebContents;
+ import org.chromium.ui.base.WindowAndroid;
+@@ -30,6 +31,17 @@
+ public class TabModelUtils {
+     private TabModelUtils() {}
+ 
++    static boolean shouldGroupWithParent(
++            boolean isTabModelRestored, @TabLaunchType int tabLaunchType, @Nullable Tab parentTab) {
++        if (!isTabModelRestored || parentTab == null) return false;
++        return tabLaunchType == TabLaunchType.FROM_TAB_GROUP_UI
++                || tabLaunchType == TabLaunchType.FROM_LONGPRESS_FOREGROUND_IN_GROUP
++                || tabLaunchType == TabLaunchType.FROM_LONGPRESS_BACKGROUND_IN_GROUP
++                || tabLaunchType == TabLaunchType.FROM_COLLABORATION_BACKGROUND_IN_GROUP
++                || (tabLaunchType == TabLaunchType.FROM_TAB_LIST_INTERFACE
++                        && parentTab.getTabGroupId() != null);
++    }
++
+     /** Returns the non-incognito instance of the {@link EmptyTabModel}. */
+     public static TabModel getEmptyTabModel() {
+         return EmptyTabModel.getInstance(/* isIncognito= */ false);
+diff --git a/chrome/common/pref_names.h b/chrome/common/pref_names.h
+index 8635a561ab..04eb829a78 100644
+--- a/chrome/common/pref_names.h
++++ b/chrome/common/pref_names.h
+@@ -3272,6 +3272,11 @@
+ 
+ // Boolean pref indicating whether the app rating prompt has been shown.
+ inline constexpr char kAppRatingPromptShown[] = "app_rating_prompt_shown";
++
++inline constexpr char kTabGroupContainerPartitionTokens[] =
++    "palladium.tab_group_container_partition_tokens";
++inline constexpr char kTabGroupContainerPendingWipeTokens[] =
++    "palladium.tab_group_container_pending_wipe_tokens";
+ #endif  // BUILDFLAG(IS_ANDROID)
+ 
+ // Integer value for overriding the CPU performance tier.
+diff --git a/content/browser/browsing_data/browsing_data_remover_impl.cc b/content/browser/browsing_data/browsing_data_remover_impl.cc
+index 6a8c5bd23c..ea85bc6a4a 100644
+--- a/content/browser/browsing_data/browsing_data_remover_impl.cc
++++ b/content/browser/browsing_data/browsing_data_remover_impl.cc
+@@ -126,6 +126,12 @@
+ 
+ }  // namespace
+ 
++std::vector<StoragePartitionConfig>
++BrowsingDataRemoverDelegate::
++    GetAdditionalStoragePartitionConfigsForRemoval() {
++  return {};
++}
++
+ BrowsingDataRemoverImpl::BrowsingDataRemoverImpl(
+     BrowserContext* browser_context)
+     : browser_context_(browser_context),
+@@ -275,13 +281,51 @@
+     DCHECK(filter_builder->MatchesAllOriginsAndDomains());
+   }
+ 
++  std::vector<StoragePartitionConfig> additional_partitions;
++  const uint64_t partition_remove_mask =
++      DATA_TYPE_ON_STORAGE_PARTITION & remove_mask;
++  if (embedder_delegate_ && partition_remove_mask &&
++      !filter_builder->GetStoragePartitionConfig().has_value()) {
++    additional_partitions =
++        embedder_delegate_->GetAdditionalStoragePartitionConfigsForRemoval();
++  }
++
++  if (!additional_partitions.empty()) {
++    const bool start_removing = task_queue_.empty();
++    bool batch_start = true;
++    for (const StoragePartitionConfig& partition : additional_partitions) {
++      auto partition_filter_builder = filter_builder->Copy();
++      partition_filter_builder->SetStoragePartitionConfig(partition);
++      RemovalTask partition_task(
++          delete_begin, delete_end, partition_remove_mask, origin_type_mask,
++          std::move(partition_filter_builder), nullptr);
++      partition_task.batch_start = batch_start;
++      partition_task.batch_end = false;
++      task_queue_.push_back(std::move(partition_task));
++      batch_start = false;
++    }
++
++    RemovalTask default_partition_task(
++        delete_begin, delete_end, remove_mask, origin_type_mask,
++        std::move(filter_builder), observer);
++    default_partition_task.batch_start = false;
++    task_queue_.push_back(std::move(default_partition_task));
++
++    if (start_removing) {
++      SetRemoving(true);
++      RunNextTask();
++    }
++    return;
++  }
++
+   RemovalTask task(delete_begin, delete_end, remove_mask, origin_type_mask,
+                    std::move(filter_builder), observer);
+ 
+   // If there is an identical deletion task that is not already running,
+   // we don't have to perform the deletion twice.
+   for (size_t i = 1; i < task_queue_.size(); i++) {
+-    if (task_queue_[i].IsSameDeletion(task)) {
++    if (task_queue_[i].batch_start && task_queue_[i].batch_end &&
++        task_queue_[i].IsSameDeletion(task)) {
+       if (observer)
+         task_queue_[i].observers.push_back(observer);
+       return;
+@@ -302,6 +346,9 @@
+ void BrowsingDataRemoverImpl::RunNextTask() {
+   DCHECK(!task_queue_.empty());
+   RemovalTask& removal_task = task_queue_.front();
++  if (removal_task.batch_start) {
++    batch_failed_data_types_ = 0;
++  }
+   removal_task.task_started = base::TimeTicks::Now();
+ 
+   // To detect tasks that are causing slow deletions, record running sub tasks
+@@ -844,9 +891,13 @@
+   DCHECK(!task_queue_.empty());
+ 
+   const RemovalTask& task = task_queue_.front();
+-  for (Observer* observer : task.observers) {
+-    if (observer_list_.HasObserver(observer)) {
+-      observer->OnBrowsingDataRemoverDone(failed_data_types_);
++  batch_failed_data_types_ |= failed_data_types_;
++  DCHECK(task.batch_end || task.observers.empty());
++  if (task.batch_end) {
++    for (Observer* observer : task.observers) {
++      if (observer_list_.HasObserver(observer)) {
++        observer->OnBrowsingDataRemoverDone(batch_failed_data_types_);
++      }
+     }
+   }
+ 
+diff --git a/content/browser/browsing_data/browsing_data_remover_impl.h b/content/browser/browsing_data/browsing_data_remover_impl.h
+index 6c2ff40d2c..46fa3cc1a6 100644
+--- a/content/browser/browsing_data/browsing_data_remover_impl.h
++++ b/content/browser/browsing_data/browsing_data_remover_impl.h
+@@ -179,6 +179,8 @@
+     std::unique_ptr<BrowsingDataFilterBuilder> filter_builder;
+     std::vector<raw_ptr<Observer, VectorExperimental>> observers;
+     base::TimeTicks task_started;
++    bool batch_start = true;
++    bool batch_end = true;
+   };
+ 
+   // Setter for |is_removing_|; DCHECKs that we can only start removing if we're
+@@ -281,6 +283,7 @@
+   std::set<TracingDataType> pending_sub_tasks_;
+ 
+   uint64_t failed_data_types_ = 0;
++  uint64_t batch_failed_data_types_ = 0;
+ 
+   // Fires after some time to track slow tasks. Cancelled when all tasks
+   // are finished.
+diff --git a/content/browser/browsing_instance.cc b/content/browser/browsing_instance.cc
+index 979a35183e..4766f0135c 100644
+--- a/content/browser/browsing_instance.cc
++++ b/content/browser/browsing_instance.cc
+@@ -64,6 +64,10 @@
+     const UrlInfo& url_info,
+     SiteInstanceGroup* creation_group,
+     bool allow_default_instance) {
++  if (is_fixed_storage_partition_ && !storage_partition_config_.has_value() &&
++      url_info.storage_partition_config.has_value()) {
++    storage_partition_config_ = url_info.storage_partition_config;
++  }
+   const SiteInfo site_info = ComputeSiteInfoForURL(url_info);
+   scoped_refptr<SiteInstanceImpl> site_instance =
+       GetSiteInstanceForURLHelper(url_info, site_info, allow_default_instance);
+@@ -86,6 +90,9 @@
+     } else {
+       instance->SetSite(url_info);
+     }
++  } else if (is_fixed_storage_partition_ &&
++             storage_partition_config_.has_value()) {
++    instance->site_info_ = site_info;
+   }
+ 
+   // Add the new SiteInstance to `group`, if it exists.
+diff --git a/content/browser/browsing_instance.h b/content/browser/browsing_instance.h
+index 0d08f05882..1c715755f3 100644
+--- a/content/browser/browsing_instance.h
++++ b/content/browser/browsing_instance.h
+@@ -321,9 +321,9 @@
+   const WebExposedIsolationInfo web_exposed_isolation_info_;
+ 
+   // The StoragePartitionConfig that must be used by all SiteInstances in this
+-  // BrowsingInstance. This will be set to the StoragePartitionConfig of the
+-  // first SiteInstance that has its SiteInfo assigned in this
+-  // BrowsingInstance, and cannot be changed afterwards.
++  // BrowsingInstance. This will be set from the first fixed partition request
++  // or the first SiteInstance that has its SiteInfo assigned, and cannot be
++  // changed afterwards.
+   //
+   // See crbug.com/1212266 for more context on why we track the
+   // StoragePartitionConfig here.
+diff --git a/content/public/browser/browsing_data_remover_delegate.h b/content/public/browser/browsing_data_remover_delegate.h
+index f4b490444c..0f17b8be93 100644
+--- a/content/public/browser/browsing_data_remover_delegate.h
++++ b/content/public/browser/browsing_data_remover_delegate.h
+@@ -5,7 +5,10 @@
+ #ifndef CONTENT_PUBLIC_BROWSER_BROWSING_DATA_REMOVER_DELEGATE_H_
+ #define CONTENT_PUBLIC_BROWSER_BROWSING_DATA_REMOVER_DELEGATE_H_
+ 
++#include <vector>
++
+ #include "base/functional/callback_forward.h"
++#include "content/public/browser/storage_partition_config.h"
+ 
+ namespace base {
+ class Time;
+@@ -44,6 +47,9 @@
+   // Whether the embedder allows the removal of download history.
+   virtual bool MayRemoveDownloadHistory() = 0;
+ 
++  virtual std::vector<StoragePartitionConfig>
++  GetAdditionalStoragePartitionConfigsForRemoval();
++
+   // Removes embedder-specific data. Once done, calls the |callback| and passes
+   // back any data types for which the deletion failed (which will always be a
+   // subset of the |remove_mask|).
