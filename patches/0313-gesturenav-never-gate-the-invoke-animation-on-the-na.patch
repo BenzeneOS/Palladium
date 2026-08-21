@@ -1,0 +1,301 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Amaan Qureshi <git@amaanq.com>
+Date: Thu, 20 Aug 2026 20:54:51 -0400
+Subject: [PATCH] gesturenav: never gate the invoke animation on the navigation
+ commit
+
+Upstream parks the release animation on the commit-pending spring until
+the navigation commits, so slow sites freeze the gesture mid-slide. Ride
+the invoke spring straight through and hold the destination screenshot
+until the first frame instead, so a slow commit only extends the still
+screenshot. Uncommitted navigations abort the transition since the invoke
+spring can't animate backwards.
+---
+ ...rd_transition_animation_manager_android.cc |  5 +-
+ .../back_forward_transition_animator.cc       | 69 ++++++++++++++++---
+ .../navigation_transitions/physics_model.cc   | 24 +++++--
+ .../navigation_transitions/physics_model.h    |  4 ++
+ 4 files changed, 88 insertions(+), 14 deletions(-)
+
+diff --git a/content/browser/navigation_transitions/back_forward_transition_animation_manager_android.cc b/content/browser/navigation_transitions/back_forward_transition_animation_manager_android.cc
+index ea1c832069524..f554e2e3fd62c 100644
+--- a/content/browser/navigation_transitions/back_forward_transition_animation_manager_android.cc
++++ b/content/browser/navigation_transitions/back_forward_transition_animation_manager_android.cc
+@@ -139,11 +139,14 @@ void BackForwardTransitionAnimationManagerAndroid::OnGestureCancelled() {
+   }
+   destination_entry_id_ = NavigationTransitionData::kInvalidId;
+ }
+ 
+ void BackForwardTransitionAnimationManagerAndroid::OnGestureInvoked() {
+-  CHECK_NE(destination_entry_id_, NavigationTransitionData::kInvalidId);
++  if (destination_entry_id_ == NavigationTransitionData::kInvalidId) {
++    // A chained gesture can run off the end of the pending-adjusted history.
++    return;
++  }
+   if (animator_) {
+     animator_->OnGestureInvoked();
+     MaybeDestroyAnimator();
+   } else {
+     int index =
+diff --git a/content/browser/navigation_transitions/back_forward_transition_animator.cc b/content/browser/navigation_transitions/back_forward_transition_animator.cc
+index be0b3a963e475..409627ef2a3be 100644
+--- a/content/browser/navigation_transitions/back_forward_transition_animator.cc
++++ b/content/browser/navigation_transitions/back_forward_transition_animator.cc
+@@ -643,11 +643,13 @@ void BackForwardTransitionAnimator::OnAnimate(
+   }
+ 
+   if (animation_finished) {
+     switch (state_) {
+       case State::kDisplayingInvokeAnimation: {
+-        CHECK_EQ(navigation_state_, NavigationState::kCommitted);
++        // The un-gated invoke animation may finish before the commit.
++        CHECK(navigation_state_ == NavigationState::kCommitted ||
++              navigation_state_ == NavigationState::kStarted);
+         OnInvokeAnimationDisplayed();
+         break;
+       }
+       case State::kDisplayingCancelAnimation: {
+         OnCancelAnimationDisplayed();
+@@ -798,10 +800,13 @@ void BackForwardTransitionAnimator::DidStartNavigation(
+         navigation_state_ == NavigationState::kBeforeUnloadDispatched);
+ 
+   if (state_ == State::kDisplayingInvokeAnimation) {
+     CHECK_EQ(navigation_state_, NavigationState::kBeforeUnloadDispatched);
+     navigation_state_ = NavigationState::kStarted;
++    // Let the physics model leave the commit-pending park now that the
++    // navigation is really underway.
++    physics_model_.OnNavigationStarted();
+   } else {
+     navigation_state_ = NavigationState::kBeforeUnloadAckedProceed;
+     AdvanceAndProcessState(State::kDisplayingInvokeAnimation);
+   }
+ }
+@@ -847,11 +852,14 @@ void BackForwardTransitionAnimator::ReadyToCommitNavigation(
+   // Ignore early swap cases for example crashed pages. They are same-RFH
+   // navigations but the current SurfaceID of this RFH doesn't refer to content
+   // from the old Document.
+   if (navigation_request->early_render_frame_host_swap_type() ==
+           NavigationRequest::EarlyRenderFrameHostSwapType::kNone &&
+-      old_rfh == new_rfh) {
++      old_rfh == new_rfh &&
++      // Once the invoke animation has finished the old page is fully
++      // off-screen, and an untransformed clone would cover the screenshot.
++      state_ != State::kWaitingForNewRendererToDraw) {
+     MaybeCloneOldSurfaceLayer(old_rfh->GetView());
+   }
+ }
+ 
+ // - For a primary main frame navigation, we only use `DidFinishNavigation()`
+@@ -901,32 +909,38 @@ void BackForwardTransitionAnimator::DidFinishNavigation(
+       // If this is a committed subframe request, animate the fallback UX to
+       // occupy the full viewport.
+       CHECK(!tracked_request_->is_primary_main_frame);
+       navigation_state_ = NavigationState::kCommitted;
+       physics_model_.OnNavigationFinished(/*navigation_committed=*/true);
++      if (state_ == State::kWaitingForNewRendererToDraw) {
++        PostNavigationFirstFrameActivated();
++        return;
++      }
+       CHECK_EQ(state_, State::kDisplayingInvokeAnimation);
+       // Signals that when the invoke animation finishes, play the cross-fade
+       // animation directly.
+       viz_has_activated_first_frame_ = true;
+     }
+     return;
+   }
+ 
+-  CHECK_EQ(state_, State::kDisplayingInvokeAnimation);
++  CHECK(state_ == State::kDisplayingInvokeAnimation ||
++        state_ == State::kWaitingForNewRendererToDraw);
+   CHECK_EQ(navigation_state_, NavigationState::kStarted);
+   navigation_state_ = NavigationState::kCancelled;
+   physics_model_.OnNavigationFinished(/*navigation_committed=*/false);
+-  // 204/205/Download, or the ongoing navigation is cancelled. We need
+-  // to animate the old page back.
++  // 204/205/Download, or the ongoing navigation is cancelled. The invoke
++  // spring is terminal and cannot animate the old page back, so tear the
++  // transition down and snap back to the live old page.
+   if (old_surface_clone_) {
+     // We might already have cloned the old surface. Reset it since we don't
+     // need it.
+     old_surface_clone_->RemoveFromParent();
+     old_surface_clone_.reset();
+   }
+   UnregisterNewFrameActivationObserver();
+-  AdvanceAndProcessState(State::kDisplayingCancelAnimation);
++  AbortAnimation(AnimationAbortReason::kChainedBack);
+ }
+ 
+ void BackForwardTransitionAnimator::OnDidNavigatePrimaryMainFramePreCommit(
+     NavigationRequest* navigation_request,
+     RenderFrameHostImpl* old_host,
+@@ -1048,15 +1062,33 @@ void BackForwardTransitionAnimator::OnDidNavigatePrimaryMainFramePreCommit(
+           kNewCommitWhileDisplayingCanceledAnimation,
+           GetNavigationRequestSchemeType(navigation_request));
+       break;
+     }
+     case State::kWaitingForNewRendererToDraw:
++      CHECK(tracked_request_);
++      if (navigation_state_ == NavigationState::kStarted) {
++        if (tracked_request_->navigation_id !=
++            navigation_request->GetNavigationId()) {
++          return;
++        }
++        // The un-gated invoke animation finished before our navigation
++        // committed and the commit has now arrived. Keep holding the
++        // screenshot until the new renderer draws.
++        ResumeDialogs();
++        navigation_state_ = NavigationState::kCommitted;
++        physics_model_.OnNavigationFinished(/*navigation_committed=*/true);
++        if (primary_main_frame_navigation_entry_item_sequence_number_ == -1 ||
++            navigation_request->DidEncounterError() ||
++            HasCrossOriginRedirect(navigation_request)) {
++          PostNavigationFirstFrameActivated();
++        }
++        break;
++      }
+       // Our navigation has already committed while a second navigation commits.
+       // This can be a client redirect: A.com -> B.com and B.com's document
+       // redirects to C.com, before B.com's renderer even submits a new frame.
+       CHECK_EQ(navigation_state_, NavigationState::kCommitted);
+-      CHECK(tracked_request_);
+       base::UmaHistogramEnumeration(
+           kNewCommitWhileWaitingForNewRendererToDraw,
+           GetNavigationRequestSchemeType(navigation_request));
+       PostNavigationFirstFrameActivated();
+       break;
+@@ -1066,16 +1098,26 @@ void BackForwardTransitionAnimator::OnDidNavigatePrimaryMainFramePreCommit(
+       // is finished and a new navigation commits before the live entry is
+       // redrawn by the embedder.
+       OnContentForNavigationEntryShown();
+       break;
+     case State::kDisplayingCrossFadeAnimation: {
++      CHECK(tracked_request_);
++      if (navigation_state_ == NavigationState::kStarted &&
++          tracked_request_->navigation_id ==
++              navigation_request->GetNavigationId()) {
++        // Viz activated the first frame before the DidCommit ack, so the
++        // cross-fade started while our navigation was still uncommitted.
++        ResumeDialogs();
++        navigation_state_ = NavigationState::kCommitted;
++        physics_model_.OnNavigationFinished(/*navigation_committed=*/true);
++        break;
++      }
+       // Our navigation has already committed while a second navigation commits.
+       // This can be a client redirect: A.com -> B.com and B.com's document
+       // redirects to C.com, while we are cross-fading from B.com's screenshot
+       // to whatever is underneath the screenshot.
+       CHECK_EQ(navigation_state_, NavigationState::kCommitted);
+-      CHECK(tracked_request_);
+       base::UmaHistogramEnumeration(
+           kNewCommitWhileDisplayingCrossFadeAnimation,
+           GetNavigationRequestSchemeType(navigation_request));
+       break;
+     }
+@@ -2118,11 +2160,20 @@ void BackForwardTransitionAnimator::InsertLayersInOrder() {
+ }
+ 
+ void BackForwardTransitionAnimator::OnPostNavigationFirstFrameTimeout() {
+   AppendToSerializeStates("ScreenshotTimeout");
+   CHECK_EQ(state_, State::kWaitingForNewRendererToDraw);
+-  CHECK_EQ(navigation_state_, NavigationState::kCommitted);
++  if (navigation_state_ != NavigationState::kCommitted) {
++    // Dismissing the screenshot before commit would reveal the old page, so
++    // keep holding until the navigation reaches a terminal state.
++    dismiss_screenshot_timer_.Start(
++        FROM_HERE, kDismissScreenshotAfter,
++        base::BindOnce(
++            &BackForwardTransitionAnimator::OnPostNavigationFirstFrameTimeout,
++            weak_ptr_factory_.GetWeakPtr()));
++    return;
++  }
+   PostNavigationFirstFrameActivated();
+ }
+ 
+ void BackForwardTransitionAnimator::PostNavigationFirstFrameActivated() {
+   AppendToSerializeStates("PostNavigationFirstFrameActivated");
+diff --git a/content/browser/navigation_transitions/physics_model.cc b/content/browser/navigation_transitions/physics_model.cc
+index e1c166c464c15..9a252bf8177fc 100644
+--- a/content/browser/navigation_transitions/physics_model.cc
++++ b/content/browser/navigation_transitions/physics_model.cc
+@@ -416,10 +416,16 @@ void PhysicsModel::OnNavigationFinished(bool committed) {
+ 
+   navigation_state_ =
+       committed ? NavigationState::kCommitted : NavigationState::kCancelled;
+ }
+ 
++void PhysicsModel::OnNavigationStarted() {
++  if (navigation_state_ == NavigationState::kBeforeUnloadDispatched) {
++    navigation_state_ = NavigationState::kStarted;
++  }
++}
++
+ bool PhysicsModel::ReachedCommitPending() const {
+   return animation_driver_ == Driver::kSpringCommitPending &&
+          foreground_has_reached_target_commit_pending_;
+ }
+ 
+@@ -525,27 +531,37 @@ void PhysicsModel::AdvanceToNextAnimationDriver(
+               // back to the browser so fast, that the cancel spring hasn't
+               // played a single frame thus we are still at
+               //`Driver::kDragCurve`. Typically this happens when the renderer
+               // doesn't have a sticky UserActivation.
+               navigation_state_ == NavigationState::kBeforeUnloadAckedProceed);
+-        animation_driver_ = Driver::kSpringCommitPending;
+-        spring_commit_pending_->set_initial_velocity(finger_vel);
++        if (navigation_state_ == NavigationState::kBeforeUnloadDispatched) {
++          animation_driver_ = Driver::kSpringCommitPending;
++          spring_commit_pending_->set_initial_velocity(finger_vel);
++        } else {
++          // Run the invoke spring un-gated on commit so a slow navigation
++          // cannot stall the release animation.
++          animation_driver_ = Driver::kSpringInvoke;
++          spring_invoke_->set_initial_velocity(finger_vel);
++        }
+       }
+       break;
+     }
+     case Driver::kSpringCommitPending: {
+       // It is rare but possible that we haven't played a single frame with
+       // commit-pending spring, where `last_request_animation_frame_` is null.
+       auto start_animating_raf = !last_request_animation_frame_.is_null()
+                                      ? last_request_animation_frame_
+                                      : request_animation_frame;
+       if (commit_pending_acceleration_start_.is_null() &&
+-          navigation_state_ == NavigationState::kCommitted) {
++          (navigation_state_ == NavigationState::kCommitted ||
++           navigation_state_ == NavigationState::kStarted ||
++           navigation_state_ == NavigationState::kBeforeUnloadAckedProceed)) {
+         // Only switch from commit-pending spring to the invoke spring when:
+         // - The commit-pending is moving in the same direction as the invoke
+         //   animation, for which `commit_pending_acceleration_start_` is null.
+-        // - The navigation is committed.
++        // - The navigation is committed, or is running un-gated after the
++        //   BeforeUnload ack.
+         StartAnimating(start_animating_raf);
+         animation_driver_ = Driver::kSpringInvoke;
+         spring_invoke_->set_initial_velocity(
+             spring_commit_pending_->ComputeVelocity());
+       } else if (navigation_state_ == NavigationState::kCancelled ||
+diff --git a/content/browser/navigation_transitions/physics_model.h b/content/browser/navigation_transitions/physics_model.h
+index a5cd45110f1ef..e60eab5d7fa01 100644
+--- a/content/browser/navigation_transitions/physics_model.h
++++ b/content/browser/navigation_transitions/physics_model.h
+@@ -84,10 +84,14 @@ class CONTENT_EXPORT PhysicsModel {
+   // Called when the navigation is finished (destruction of the navigation
+   // request). The caller is responsible for reacting to the targeted navigation
+   // request (when there are multiple navigation requests).
+   void OnNavigationFinished(bool navigation_committed);
+ 
++  // Called when the renderer acks BeforeUnload without a dialog and the
++  // navigation actually starts.
++  void OnNavigationStarted();
++
+   // Returns true if the current animation is driven by the commit-pending
+   // spring, and the animation has reached the commit-pending position.
+   bool ReachedCommitPending() const;
+ 
+  private:
+-- 
+2.54.0
+
